@@ -141,6 +141,24 @@ async def client_kb_search(
             if not resolved:
                 return {"mode": "no_result", "chunks": [], "sources": []}
             mode, chunks, sources = await kb_search.retrieve(client, query, resolved, recent=recent)
+            if recent:
+                # recent 走 WeKnora 全局最近更新接口，返回项横跨所有部门库——
+                # 这里按可见集逐条过滤（item.kb_id ∈ visible），防止把其他部门的
+                # 库名/标题泄露给任意持 token 用户。过滤后为空按 no_result 下发。
+                chunks = [c for c in chunks if c.get("kb_id") in visible]
+                seen_ids: set = set()
+                sources = []
+                for c in chunks:
+                    if c["id"] not in seen_ids:
+                        seen_ids.add(c["id"])
+                        sources.append({"id": c["id"], "kb_id": c["kb_id"],
+                                        "kb_name": c.get("kb_name") or "",
+                                        "title": c.get("title") or ""})
+                if not chunks:
+                    if mode == "unavailable":
+                        return {"mode": "unavailable", "chunks": [], "sources": []}
+                    return {"mode": "no_result", "chunks": [], "sources": []}
+                mode = "ok"
     except (httpx.HTTPError, ValueError):
         return {"mode": "unavailable", "chunks": [], "sources": []}
     return {"mode": mode, "chunks": chunks, "sources": sources}

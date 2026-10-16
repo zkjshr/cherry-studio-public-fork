@@ -55,7 +55,7 @@ def test_deep_flat_chunks_and_kb_name_fill():
     body = resp.json()
     assert body["partial"] is False
     top = body["results"][0]
-    assert top["id"] == "d1" and top["kb_name"] == "103-科技质量部" and top["score"] == 1.0
+    assert top["id"] == "d1:0" and top["kb_name"] == "103-科技质量部" and top["score"] == 1.0
 
 
 @respx.mock
@@ -70,7 +70,7 @@ def test_deep_partial_on_kb_failure():
     respx.get("http://wk.test/api/v1/knowledge-bases").mock(return_value=httpx.Response(200, json={"data": []}))
     resp = client.get("/api/deep?q=X&kb_ids=kb1,kb2", headers=AUTH)
     body = resp.json()
-    assert body["partial"] is True and body["results"][0]["id"] == "d1"
+    assert body["partial"] is True and body["results"][0]["id"] == "d1:0"
 
 
 @respx.mock

@@ -119,7 +119,7 @@ export async function gatewayKbSearch(kbId: string, query: string): Promise<Know
   for (const chunk of body.chunks) {
     if (seen.has(chunk.id)) continue
     seen.add(chunk.id)
-    const itemId = deterministicItemId(chunk.kb_id, chunk.id)
+    const itemId = deterministicItemId(chunk.kb_id, chunk.id, chunk.chunk_index)
     const content = (chunk.content || '').trim()
     results.push({
       pageContent: content || `${chunk.title}（${chunk.kb_name}）`,
@@ -181,11 +181,15 @@ function clampScore(score: number | null): number {
 /**
  * WeKnora chunk id（知识库内稳定）→ 确定性 uuidv7 形态 id。
  * KnowledgeItemIdSchema 要求 uuidv7；同 chunk 跨调用必须得到同一 id（kb_read
- * 提示、引用展示都靠它关联）。v7 布局：48bit 时间戳取固定纪元 + 12bit 随机区
- * 取 sha256(kbId/chunkId) 的切片。
+ * 提示、引用展示都靠它关联）。chunk_index 一并纳入哈希输入：上游 chunk id 缺失
+ * 时网关退化为 knowledge_id:chunk_index，但即便 id 已唯一，带上 chunk_index 也
+ * 保证同文档不同 chunk 绝不碰撞。v7 布局：48bit 时间戳取固定纪元 + 12bit 随机区
+ * 取 sha256(kbId/chunkId/chunkIndex) 的切片。
  */
-function deterministicItemId(kbId: string, chunkId: string): string {
-  const digest = createHash('sha256').update(`${kbId}/${chunkId}`).digest('hex')
+function deterministicItemId(kbId: string, chunkId: string, chunkIndex?: number): string {
+  const digest = createHash('sha256')
+    .update(`${kbId}/${chunkId}/${chunkIndex ?? ''}`)
+    .digest('hex')
   const hex = FIXED_EPOCH_MS.toString(16).padStart(12, '0')
   return [
     hex.slice(0, 8),

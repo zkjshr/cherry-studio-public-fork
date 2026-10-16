@@ -89,6 +89,48 @@ describe('gatewayKbSearch', () => {
     expect(again[0].itemId).toBe(out[0].itemId)
   })
 
+  it('gives distinct itemIds to chunks of the same document and keeps both after dedup', async () => {
+    // 网关 chunk id 已逐 chunk 唯一；itemId 还纳入 chunk_index——同文档两个 chunk
+    // 必须得到不同 uuidv7 itemId，且去重不丢任何一个。
+    const twoChunkBody = JSON.stringify({
+      mode: 'ok',
+      chunks: [
+        {
+          id: 'k1:0',
+          kb_id: 'kb-202',
+          kb_name: '202-建筑一院',
+          title: '通知A',
+          file_name: 'a.md',
+          score: 0.9,
+          content: '第一段',
+          chunk_index: 0
+        },
+        {
+          id: 'k1:1',
+          kb_id: 'kb-202',
+          kb_name: '202-建筑一院',
+          title: '通知A',
+          file_name: 'a.md',
+          score: 0.8,
+          content: '第二段',
+          chunk_index: 1
+        }
+      ],
+      sources: []
+    })
+    // 每次调用给全新 Response：Response body 只能消费一次。
+    mockFetch.mockImplementation(() => Promise.resolve(new Response(twoChunkBody, { status: 200 })))
+    const out = await gatewayKbSearch('ekp', '资质')
+    expect(out).toHaveLength(2)
+    expect(out[0].itemId).not.toBe(out[1].itemId)
+    for (const r of out) {
+      expect(r.itemId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+    }
+    // itemId 确定性：同输入再取一次结果一致
+    const again = await gatewayKbSearch('ekp', '资质')
+    expect(again.map((r) => r.itemId)).toEqual(out.map((r) => r.itemId))
+  })
+
   it('falls back to chunkIndex 0 and title-based content when the chunk has no content', async () => {
     mockFetch.mockResolvedValue(
       new Response(

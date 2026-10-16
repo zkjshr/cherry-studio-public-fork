@@ -85,8 +85,29 @@ def test_recent_requires_some_visible_kb():
     assert r.json()["mode"] == "no_result"
 
 
-def test_recent_with_visible_kb_reaches_retrieve():
-    # 登记用户 + 可见真实库：recent=true 正常放行
+def test_recent_with_visible_kb_reaches_retrieve(monkeypatch):
+    # recent 走全局最近更新接口，返回项横跨可见库与不可见库——端点必须按可见集
+    # 过滤，只有 kb-202 的项存活，kb-101 的项绝不外泄。
+    async def fake_recent_retrieve(c, q, kb_ids, recent=False):
+        items = [
+            {"id": "r-202", "kb_id": "kb-202", "kb_name": "202-建筑一院", "title": "可见通知",
+             "file_name": "", "updated_at": None, "score": None},
+            {"id": "r-101", "kb_id": "kb-101", "kb_name": "101-市场运营部", "title": "机密通知",
+             "file_name": "", "updated_at": None, "score": None},
+        ]
+        return "ok", items, items
+    monkeypatch.setattr(knowledge_mod.kb_search, "retrieve", fake_recent_retrieve)
     r = client.post("/knowledge/api/search", headers={**_H, "X-Client-User": "51-zhang-kj"},
                     json={"kb_ids": ["weknora:kb-202"], "query": "x", "recent": True})
-    assert r.json()["mode"] == "ok"
+    body = r.json()
+    assert body["mode"] == "ok"
+    assert [c["id"] for c in body["chunks"]] == ["r-202"]
+    assert [s["id"] for s in body["sources"]] == ["r-202"]
+    assert all(c["kb_id"] != "kb-101" for c in body["chunks"] + body["sources"])
+
+
+def test_recent_unregistered_user_no_result():
+    # 未登记用户 + recent=true：可见集为空，直接 no_result，绝不进入 retrieve
+    r = client.post("/knowledge/api/search", headers={**_H, "X-Client-User": "nobody"},
+                    json={"kb_ids": ["weknora:kb-202"], "query": "x", "recent": True})
+    assert r.json()["mode"] == "no_result"

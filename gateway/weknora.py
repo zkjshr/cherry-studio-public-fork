@@ -58,9 +58,14 @@ async def kb_hybrid_search(client: httpx.AsyncClient, kb_id: str, q: str, limit:
     resp.raise_for_status()
     items = resp.json().get("data") or []
     out = []
-    for item in items[:limit]:
+    for i, item in enumerate(items[:limit]):
+        # chunk id 必须逐 chunk 唯一：knowledge_id 是文档级 id，同一文档可回多条
+        # chunk，直接拿它当 id 会让下游按 id 去重时把同文档的其余 chunk 全部丢弃，
+        # 引用 itemId 也会互相碰撞。live WeKnora 的 chunk 带顶层 id；缺失时退化为
+        # knowledge_id:chunk_index。
+        chunk_id = item.get("id") or f"{item.get('knowledge_id')}:{item.get('chunk_index', i)}"
         out.append({
-            "id": item.get("knowledge_id"),
+            "id": chunk_id,
             "kb_id": kb_id,
             "kb_name": "",
             "title": item.get("knowledge_title") or item.get("knowledge_filename") or "",
