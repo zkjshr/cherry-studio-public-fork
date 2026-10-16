@@ -7,7 +7,7 @@ import { knowledgeErrorCodes } from '@shared/ipc/errors/knowledge'
 const { appGetMock } = vi.hoisted(() => ({ appGetMock: vi.fn() }))
 vi.mock('@application', () => ({ application: { get: appGetMock } }))
 // Mock the barrel (what the handler imports) so the feature graph behind it never loads.
-vi.mock('@main/features/knowledge', () => ({ listSharedKnowledgeBases: vi.fn() }))
+vi.mock('@main/features/knowledge', () => ({ listSharedKnowledgeBases: vi.fn(), listGatewayKbPseudoBases: vi.fn() }))
 
 import { knowledgeHandlers } from '../knowledge'
 
@@ -199,5 +199,23 @@ describe('knowledgeHandlers', () => {
 
     expect(vi.mocked(listSharedKnowledgeBases)).toHaveBeenCalledWith()
     expect(result).toEqual(payload)
+  })
+
+  it('list_gateway_pseudo_bases delegates to the gateway kb adapter', async () => {
+    const { listGatewayKbPseudoBases } = await import('@main/features/knowledge')
+    const pseudoBases = [{ id: 'ekp', name: 'ekp数据检索' }] as never[]
+    vi.mocked(listGatewayKbPseudoBases).mockResolvedValue(pseudoBases)
+
+    const result = await knowledgeHandlers['knowledge.list_gateway_pseudo_bases'](undefined, ctx)
+
+    expect(vi.mocked(listGatewayKbPseudoBases)).toHaveBeenCalledWith()
+    expect(result).toEqual(pseudoBases)
+  })
+
+  it('list_gateway_pseudo_bases degrades to an empty list when the gateway is unavailable', async () => {
+    const { listGatewayKbPseudoBases } = await import('@main/features/knowledge')
+    vi.mocked(listGatewayKbPseudoBases).mockRejectedValue(new Error('gateway down'))
+
+    await expect(knowledgeHandlers['knowledge.list_gateway_pseudo_bases'](undefined, ctx)).resolves.toEqual([])
   })
 })

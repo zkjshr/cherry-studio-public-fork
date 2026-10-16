@@ -106,9 +106,10 @@ import {
 import { useComposerQuoteInsertion } from './shared/composerQuote'
 import { type ComposerToolbarCustomTool, ComposerToolbarShortcuts } from './shared/ComposerToolbarShortcuts'
 import { useComposerFileCapabilities } from './shared/useComposerFileCapabilities'
-import { useComposerKnowledgeBaseScope } from './shared/useComposerKnowledgeBaseScope'
+import { useComposerKnowledgeBaseScope, mergeComposerKnowledgeBases } from './shared/useComposerKnowledgeBaseScope'
 import { useComposerToolbarPinnedTools } from './shared/useComposerToolbarPinnedTools'
 import { useEntityReferenceMentionSource } from './shared/useEntityReferenceMentionSource'
+import { useGatewayKnowledgeBases } from './shared/useGatewayKnowledgeBases'
 import { useLatest } from './shared/useLatest'
 
 const logger = loggerService.withContext('ChatComposer')
@@ -595,9 +596,14 @@ const ChatComposerInner = ({
     Boolean(editingMessageForCurrentTopic) ||
     rootPanelVisible ||
     knowledgeBasePanelVisible
-  const { bases: allKnowledgeBases, isLoading: isKnowledgeBasesLoading } = useKnowledgeBases({
+  const { bases: localKnowledgeBases, isLoading: isKnowledgeBasesLoading } = useKnowledgeBases({
     enabled: knowledgeBasesDataEnabled
   })
+  const { bases: gatewayKnowledgeBases } = useGatewayKnowledgeBases({ enabled: knowledgeBasesDataEnabled })
+  const allKnowledgeBases = useMemo(
+    () => mergeComposerKnowledgeBases(localKnowledgeBases, gatewayKnowledgeBases),
+    [localKnowledgeBases, gatewayKnowledgeBases]
+  )
   const filesRef = useLatest(files)
   const selectedKnowledgeBasesRef = useLatest(selectedKnowledgeBases)
   const mentionedModelsRef = useLatest(mentionedModels)

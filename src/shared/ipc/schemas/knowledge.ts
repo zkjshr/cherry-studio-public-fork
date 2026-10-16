@@ -3,6 +3,7 @@ import * as z from 'zod'
 import { UpdateKnowledgeBaseSchema } from '@shared/data/api/schemas/knowledges'
 import {
   CreateKnowledgeBaseSchema,
+  GatewayPseudoKnowledgeBaseSchema,
   KNOWLEDGE_RUNTIME_ITEMS_MAX,
   KnowledgeAddConflictStrategySchema,
   KnowledgeAddItemInputSchema,
@@ -88,5 +89,12 @@ export const knowledgeRequestSchemas = {
     output: z.array(KnowledgeItemChunkSchema)
   }),
   // 企业共享知识库目录（WeKnora 部门/公共库）+ 置顶知识话题 id，客户端只读。
-  'knowledge.list_shared_kbs': defineRoute({ input: z.void(), output: SharedKnowledgeBasesPayloadSchema })
+  'knowledge.list_shared_kbs': defineRoute({ input: z.void(), output: SharedKnowledgeBasesPayloadSchema }),
+  // 网关共享库物化出的伪 KnowledgeBase 列表（含虚拟「ekp数据检索」），供 composer
+  // 知识库选择器与 agent scope 合并。id 是网关 wire id（非 uuidv4），见
+  // GatewayPseudoKnowledgeBaseSchema；主进程侧失败已降级为 []。
+  'knowledge.list_gateway_pseudo_bases': defineRoute({
+    input: z.void(),
+    output: z.array(GatewayPseudoKnowledgeBaseSchema)
+  })
 }

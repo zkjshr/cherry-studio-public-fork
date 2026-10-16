@@ -5272,11 +5272,17 @@ describe('AgentSessionRuntimeService', () => {
     })
 
     it('lets a static Agent binding override different composer selections for steer matching', async () => {
+      // uuidv4 fixtures: resolveKnowledgeBaseScope treats non-uuid (gateway-shaped) ids as bound ∪
+      // selected, which would make these two selections legitimately differ. This test pins the
+      // LOCAL rule — a bound agent's scope ignores the selection identity.
+      const kbBound = '0a0a0a0a-1111-4222-8333-444455556666'
+      const kbSel1 = '1b1b1b1b-2222-4333-8444-555566667777'
+      const kbSel2 = '2c2c2c2c-3333-4444-8555-666677778888'
       mocks.getAgent.mockReturnValue({
         id: 'agent-1',
         type: 'test-runtime',
         model: baseTurnInput.modelId,
-        knowledgeBaseIds: ['kb-bound']
+        knowledgeBaseIds: [kbBound]
       })
       const events = createAsyncQueue<any>()
       const redirect = vi.fn().mockReturnValue(true)
@@ -5289,7 +5295,7 @@ describe('AgentSessionRuntimeService', () => {
         listAvailableTools: vi.fn().mockResolvedValue([])
       })
       const service = new AgentSessionRuntimeService()
-      const handle = service.beginTurn({ ...baseTurnInput, userMessage: userMessage('user-1', ['kb-1']) })
+      const handle = service.beginTurn({ ...baseTurnInput, userMessage: userMessage('user-1', [kbSel1]) })
       const stream = service.openTurnStream({
         sessionId: 'session-1',
         turnId: handle.turnId,
@@ -5299,7 +5305,7 @@ describe('AgentSessionRuntimeService', () => {
       await expect(reader.read()).resolves.toMatchObject({ value: { type: 'start' }, done: false })
       await vi.waitFor(() => expect(connection.send).toHaveBeenCalledOnce())
 
-      const sameEffectiveScopeMessage = userMessage('user-2', ['kb-2'])
+      const sameEffectiveScopeMessage = userMessage('user-2', [kbSel2])
       service.enqueueUserMessage('session-1', sameEffectiveScopeMessage)
 
       expect(redirect).toHaveBeenCalledWith({ message: sameEffectiveScopeMessage, systemReminder: true })

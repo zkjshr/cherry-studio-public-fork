@@ -133,10 +133,11 @@ import { buildComposerQueuedPayload, getComposerHistoryText } from './shared/com
 import { useComposerQuoteInsertion } from './shared/composerQuote'
 import { type ComposerToolbarCustomTool, ComposerToolbarShortcuts } from './shared/ComposerToolbarShortcuts'
 import { useComposerFileCapabilities } from './shared/useComposerFileCapabilities'
-import { useComposerKnowledgeBaseScope } from './shared/useComposerKnowledgeBaseScope'
+import { useComposerKnowledgeBaseScope, mergeComposerKnowledgeBases } from './shared/useComposerKnowledgeBaseScope'
 import { useComposerSelectionReferenceInsertion } from './shared/useComposerSelectionReferenceInsertion'
 import { useComposerToolbarPinnedTools } from './shared/useComposerToolbarPinnedTools'
 import { useEntityReferenceMentionItems } from './shared/useEntityReferenceMentionSource'
+import { useGatewayKnowledgeBases } from './shared/useGatewayKnowledgeBases'
 import { useLatest } from './shared/useLatest'
 
 const logger = loggerService.withContext('AgentComposer')
@@ -896,9 +897,14 @@ const AgentComposerInner = ({
     () => new Map(availableSkills.map((skill) => [skill.filename, skill])),
     [availableSkills]
   )
-  const { bases: allKnowledgeBases, isLoading: isKnowledgeBasesLoading } = useKnowledgeBases({
+  const { bases: localKnowledgeBases, isLoading: isKnowledgeBasesLoading } = useKnowledgeBases({
     enabled: knowledgeBasesDataEnabled
   })
+  const { bases: gatewayKnowledgeBases } = useGatewayKnowledgeBases({ enabled: knowledgeBasesDataEnabled })
+  const allKnowledgeBases = useMemo(
+    () => mergeComposerKnowledgeBases(localKnowledgeBases, gatewayKnowledgeBases),
+    [localKnowledgeBases, gatewayKnowledgeBases]
+  )
 
   const { canAddImageFile, supportedExts } = useComposerFileCapabilities(model)
 

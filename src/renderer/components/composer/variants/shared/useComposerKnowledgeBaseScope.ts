@@ -7,6 +7,18 @@ import { composerKnowledgeBaseTokenId, knowledgeBaseToComposerToken } from './co
 
 const KNOWLEDGE_BASE_IDS_KEY_SEPARATOR = '\u0000'
 
+/**
+ * 本地库与网关伪库（含虚拟「ekp数据检索」）合并成 composer 的统一可选列表。
+ * 纯函数：网关目录追加在本地库之后（网关顺序原样保留），任一侧未就绪/降级为
+ * 空都不影响另一侧。单独提出以便对合并语义做单元测试。
+ */
+export function mergeComposerKnowledgeBases(
+  localBases: readonly KnowledgeBase[] | undefined,
+  gatewayBases: readonly KnowledgeBase[] | undefined
+): KnowledgeBase[] {
+  return [...(localBases ?? []), ...(gatewayBases ?? [])]
+}
+
 interface UseComposerKnowledgeBaseScopeParams {
   /** Knowledge base ids configured on the active assistant or Agent. */
   configuredKnowledgeBaseIds: readonly string[] | undefined

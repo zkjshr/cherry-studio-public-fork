@@ -315,10 +315,14 @@ describe('buildClaudeCodeQueryRequestForAgentSession resume-token precedence', (
   })
 
   it('uses the Agent static binding instead of the per-turn selection', async () => {
+    // uuidv4 fixtures: resolveKnowledgeBaseScope partitions local ids from gateway wire ids by
+    // shape, so local-semantics tests must use realistic local ids.
+    const kbBound = '0a0a0a0a-1111-4222-8333-444455556666'
+    const kbSelected = '5f5f5f5f-6666-4777-8888-9999aaaabbbb'
     mocks.getAgent.mockReturnValue({
       id: 'agent-1',
       model: 'provider-1::model-1',
-      knowledgeBaseIds: ['kb-bound']
+      knowledgeBaseIds: [kbBound]
     })
 
     const request = await buildClaudeCodeQueryRequestForAgentSession(
@@ -327,10 +331,10 @@ describe('buildClaudeCodeQueryRequestForAgentSession resume-token precedence', (
       undefined,
       'default',
       false,
-      ['kb-selected']
+      [kbSelected]
     )
 
-    expect(request?.knowledgeBaseIds).toEqual(['kb-bound'])
+    expect(request?.knowledgeBaseIds).toEqual([kbBound])
   })
 
   it('routes with the connection-scoped model override instead of the agent latest model', async () => {
@@ -1789,11 +1793,18 @@ describe('deriveConnectionConfig', () => {
       model: 'provider-1::model-1',
       disabledTools: [],
       mcps: [],
-      knowledgeBaseIds: ['kb-bound'],
+      // uuidv4 binding: a non-uuid id would read as gateway-shaped and stop pinning the local rule.
+      knowledgeBaseIds: ['0a0a0a0a-1111-4222-8333-444455556666'],
       configuration: {}
     })
-    const firstSelection = await deriveConnectionConfig('session-1', undefined, 'default', false, ['kb-a'])
-    const secondSelection = await deriveConnectionConfig('session-1', undefined, 'default', false, ['kb-b'])
+    // uuidv4 selections: non-uuid gateway-shaped ids would union into the scope and change the
+    // signature — this test pins the LOCAL rule (bound agent ignores selection identity).
+    const firstSelection = await deriveConnectionConfig('session-1', undefined, 'default', false, [
+      '3d3d3d3d-4444-4555-8666-777788889999'
+    ])
+    const secondSelection = await deriveConnectionConfig('session-1', undefined, 'default', false, [
+      '4e4e4e4e-5555-4666-8777-88889999aaaa'
+    ])
     if (!firstSelection.ok || !secondSelection.ok) throw new Error('expected ok derive')
     expect(secondSelection.config.rebuildSignature).toBe(firstSelection.config.rebuildSignature)
   })

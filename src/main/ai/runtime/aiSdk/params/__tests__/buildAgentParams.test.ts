@@ -1975,21 +1975,28 @@ describe('buildAgentParams knowledge-scope enforcement', () => {
     return observedScope
   }
 
+  // Local base ids are uuidv4 — the scope resolver partitions local ids from gateway wire ids by
+  // shape (KnowledgeBaseIdSchema), so these fixtures must stay uuidv4-valid to pin LOCAL narrowing.
+  const KB_1 = '3f2504e0-4f89-41d3-9a0c-0305e82c3301'
+  const KB_2 = 'b3c0d4a2-1e5f-4a7b-8c9d-0e1f2a3b4c5d'
+  const KB_PUBLIC = 'c9bf9f57-6a1e-4d3c-9f2a-7b8c1d2e3f4a'
+  const KB_PRIVATE = 'd4e5f6a7-b8c9-4d2e-8f1a-2b3c4d5e6f7a'
+
   it('narrows the assistant binding to the request selection instead of ignoring it', async () => {
-    await expect(effectiveScopeFor(['kb-1', 'kb-2'], ['kb-1'])).resolves.toEqual(['kb-1'])
+    await expect(effectiveScopeFor([KB_1, KB_2], [KB_1])).resolves.toEqual([KB_1])
   })
 
   it('never widens the assistant binding, whichever bases the request asks for', async () => {
-    // An assistant statically bound to `kb-public` must not become searchable for `kb-private` just
+    // An assistant statically bound to `KB_PUBLIC` must not become searchable for `KB_PRIVATE` just
     // because the renderer/IPC request asked for it — the binding is the trust boundary, not whatever
     // the composer UI happened to let the user pick. A wholly out-of-scope selection is no narrowing
     // at all, so the full binding stands rather than the assistant losing its own bases.
-    await expect(effectiveScopeFor(['kb-public'], ['kb-private'])).resolves.toEqual(['kb-public'])
-    await expect(effectiveScopeFor(['kb-1'], ['kb-1', 'kb-2'])).resolves.toEqual(['kb-1'])
+    await expect(effectiveScopeFor([KB_PUBLIC], [KB_PRIVATE])).resolves.toEqual([KB_PUBLIC])
+    await expect(effectiveScopeFor([KB_1], [KB_1, KB_2])).resolves.toEqual([KB_1])
   })
 
   it('falls back to the assistant binding when the request selects none', async () => {
-    await expect(effectiveScopeFor(['kb-1'], undefined)).resolves.toEqual(['kb-1'])
+    await expect(effectiveScopeFor([KB_1], undefined)).resolves.toEqual([KB_1])
   })
 
   it('lets the request selection define the scope when the assistant has no binding', async () => {

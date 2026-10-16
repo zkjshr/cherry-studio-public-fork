@@ -1,10 +1,13 @@
 import { application } from '@application'
-import { listSharedKnowledgeBases } from '@main/features/knowledge'
+import { loggerService } from '@logger'
+import { listGatewayKbPseudoBases, listSharedKnowledgeBases } from '@main/features/knowledge'
 import { ErrorCode, isDataApiError } from '@shared/data/api/errors'
 import { IpcError } from '@shared/ipc/errors/IpcError'
 import { knowledgeErrorCodes } from '@shared/ipc/errors/knowledge'
 import type { knowledgeRequestSchemas } from '@shared/ipc/schemas/knowledge'
 import type { IpcHandlersFor } from '@shared/ipc/types'
+
+const logger = loggerService.withContext('knowledgeHandlers')
 
 /**
  * Thin adapters for the knowledge request routes: each one translates a parsed route
@@ -46,5 +49,17 @@ export const knowledgeHandlers: IpcHandlersFor<typeof knowledgeRequestSchemas> =
   },
   'knowledge.list_item_chunks': async ({ baseId, itemId }) =>
     application.get('KnowledgeService').listItemChunks(baseId, itemId),
-  'knowledge.list_shared_kbs': async () => listSharedKnowledgeBases()
+  'knowledge.list_shared_kbs': async () => listSharedKnowledgeBases(),
+  // 网关共享库伪 KnowledgeBase 列表（含虚拟「ekp数据检索」）：composer 选择器与
+  // agent scope 的数据源。与 list_shared_kbs 的区别：这里产出可直接合并进
+  // allKnowledgeBases 的 KnowledgeBase 形状。目录拉取失败（网关未启用/不可达）
+  // 降级为 []，让 composer 与 scope 在企业环境之外照常工作。
+  'knowledge.list_gateway_pseudo_bases': async () => {
+    try {
+      return await listGatewayKbPseudoBases()
+    } catch (error) {
+      logger.warn('Failed to list gateway pseudo knowledge bases; degrading to empty list', { error })
+      return []
+    }
+  }
 }

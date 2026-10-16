@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { KnowledgeBase } from '@shared/data/types/knowledge'
 
-import { useComposerKnowledgeBaseScope } from '../useComposerKnowledgeBaseScope'
+import { mergeComposerKnowledgeBases, useComposerKnowledgeBaseScope } from '../useComposerKnowledgeBaseScope'
 
 const kb = (id: string, name = id): KnowledgeBase => ({ id, name }) as KnowledgeBase
 
@@ -152,6 +152,66 @@ describe('useComposerKnowledgeBaseScope', () => {
     // Switching topic or agent must not carry one conversation's knowledge scope into the next.
     rerender({ allKnowledgeBases: bases, isKnowledgeBasesLoading: false, scopeKey: 'topic-2:agent-1' })
 
+    expect(result.current.selectedKnowledgeBases).toEqual([])
+  })
+})
+
+describe('mergeComposerKnowledgeBases', () => {
+  it('appends gateway pseudo bases after the local list, preserving gateway order', () => {
+    const local = [kb('3f2504e0-4f89-41d3-9a0c-0305e82c3301', '本地库')]
+    const gateway = [kb('ekp', 'ekp数据检索'), kb('kb-202', '部门制度库')]
+
+    expect(mergeComposerKnowledgeBases(local, gateway)).toEqual([...local, ...gateway])
+  })
+
+  it('degrades independently: a missing side contributes nothing', () => {
+    const local = [kb('kb-1')]
+    const gateway = [kb('ekp', 'ekp数据检索')]
+
+    expect(mergeComposerKnowledgeBases(local, undefined)).toEqual(local)
+    expect(mergeComposerKnowledgeBases(undefined, gateway)).toEqual(gateway)
+    expect(mergeComposerKnowledgeBases(undefined, undefined)).toEqual([])
+  })
+})
+
+describe('gateway pseudo bases in the composer scope', () => {
+  // The composers feed `mergeComposerKnowledgeBases(localBases, gatewayBases)` into the hook, so a
+  // merged list is exactly what production passes in — including the virtual「ekp数据检索」base.
+  it('offers a merged-in gateway base for selection and keeps it through pruning', () => {
+    const merged = mergeComposerKnowledgeBases(
+      [kb('3f2504e0-4f89-41d3-9a0c-0305e82c3301', '本地库')],
+      [kb('ekp', 'ekp数据检索')]
+    )
+    const { result } = renderHook(useScopeHarness, {
+      initialProps: { allKnowledgeBases: merged, isKnowledgeBasesLoading: false, scopeKey: SCOPE_KEY }
+    })
+
+    expect(result.current.selectableKnowledgeBases.map((base) => base.id)).toContain('ekp')
+
+    act(() => result.current.restoreKnowledgeBaseSelection(['ekp']))
+    expect(result.current.selectedKnowledgeBases.map((base) => base.id)).toEqual(['ekp'])
+    expect(result.current.selectedKnowledgeBasesInScope.map((base) => base.id)).toEqual(['ekp'])
+  })
+
+  it('still confines selections to the configured set once the gateway base is merged in', () => {
+    // Binding is the ceiling in the UI too: an agent bound only to the local base must not be able
+    // to keep a gateway pick a stale draft restored.
+    const merged = mergeComposerKnowledgeBases(
+      [kb('3f2504e0-4f89-41d3-9a0c-0305e82c3301', '本地库')],
+      [kb('ekp', 'ekp数据检索')]
+    )
+    const { result } = renderHook(useScopeHarness, {
+      initialProps: {
+        configuredKnowledgeBaseIds: ['3f2504e0-4f89-41d3-9a0c-0305e82c3301'],
+        allKnowledgeBases: merged,
+        isKnowledgeBasesLoading: false,
+        scopeKey: SCOPE_KEY
+      }
+    })
+
+    expect(result.current.selectableKnowledgeBases.map((base) => base.id)).not.toContain('ekp')
+
+    act(() => result.current.restoreKnowledgeBaseSelection(['ekp']))
     expect(result.current.selectedKnowledgeBases).toEqual([])
   })
 })

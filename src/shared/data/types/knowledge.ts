@@ -919,6 +919,8 @@ export function getKnowledgeItemConflictKey(item: KnowledgeItemTitleSource): str
 export const SharedKnowledgeBaseSchema = z.object({
   id: z.string().min(1),
   name: z.string(),
+  /** WeKnora 库描述；旧网关不下发该键，故可缺省。 */
+  description: z.string().optional(),
   scope: z.enum(['dept', 'public'])
 })
 export type SharedKnowledgeBase = z.infer<typeof SharedKnowledgeBaseSchema>
@@ -943,3 +945,14 @@ export const SharedKnowledgeBasesPayloadSchema = GatewaySharedKbsResponseSchema.
   chatTopicId: z.string().nullable()
 })
 export type SharedKnowledgeBasesPayload = z.infer<typeof SharedKnowledgeBasesPayloadSchema>
+
+/**
+ * 网关共享库物化出的伪 KnowledgeBase（gatewayKbSearch.pseudoBase，内存对象、
+ * 绝不落库）。结构与 KnowledgeBase 完全一致，唯一区别是 id 用网关 wire id
+ * （`ekp`、WeKnora uuid）原样——不是 uuidv4，因此不能过 KnowledgeBaseIdSchema，
+ * composer/scope 只把它当不透明 key。
+ */
+export const GatewayPseudoKnowledgeBaseSchema = KnowledgeBaseEntitySchema.extend({
+  id: z.string().trim().min(1)
+})
+export type GatewayPseudoKnowledgeBase = z.infer<typeof GatewayPseudoKnowledgeBaseSchema>
