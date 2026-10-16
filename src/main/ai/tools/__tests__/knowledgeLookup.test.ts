@@ -4,17 +4,37 @@ vi.mock('@logger', () => ({
   loggerService: { withContext: () => ({ debug: vi.fn(), warn: vi.fn(), info: vi.fn(), error: vi.fn() }) }
 }))
 
-const { knowledgeSearchMock, addItemsMock } = vi.hoisted(() => ({
+const { knowledgeSearchMock, addItemsMock, listBasesForDiscoveryMock, listRootItemsMock } = vi.hoisted(() => ({
   knowledgeSearchMock: vi.fn<() => Promise<unknown[]>>(),
-  addItemsMock: vi.fn<() => Promise<unknown>>()
+  addItemsMock: vi.fn<() => Promise<unknown>>(),
+  listBasesForDiscoveryMock: vi.fn<() => { items: unknown[]; total: number; nextCursor?: string }>(),
+  listRootItemsMock: vi.fn<() => unknown[]>()
 }))
 vi.mock('@application', () => ({
   application: {
     get: (name: string) => {
-      if (name === 'KnowledgeService') return { search: knowledgeSearchMock, addItems: addItemsMock }
+      if (name === 'KnowledgeService')
+        return {
+          search: knowledgeSearchMock,
+          addItems: addItemsMock,
+          listBasesForDiscovery: listBasesForDiscoveryMock,
+          listRootItems: listRootItemsMock
+        }
       throw new Error(`Unexpected application.get(${name})`)
     }
   }
+}))
+
+const { gatewayKbSearchMock, listGatewayKbPseudoBasesMock } = vi.hoisted(() => ({
+  gatewayKbSearchMock: vi.fn<() => Promise<unknown[]>>(),
+  // Default: no shared bases — searchKnowledge consults the catalog on every call,
+  // so local-only cases must see an empty catalog without per-test setup.
+  listGatewayKbPseudoBasesMock: vi.fn(async () => [] as unknown[])
+}))
+vi.mock('@main/features/knowledge', () => ({
+  isGatewayKbId: vi.fn((id: string) => id === 'ekp' || id === 'kb-202'),
+  gatewayKbSearch: gatewayKbSearchMock,
+  listGatewayKbPseudoBases: listGatewayKbPseudoBasesMock
 }))
 
 import {
@@ -22,13 +42,20 @@ import {
   knowledgeListModelOutput,
   knowledgeManageModelOutput,
   knowledgeReadModelOutput,
+  listOrOutlineKnowledge,
   manageKnowledge,
+  readOrGrepConcept,
   searchKnowledge
 } from '../knowledgeLookup'
 
 const CITE_ID = /^[0-9a-f]{8}-\d+$/
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => {
+  vi.restoreAllMocks()
+  // searchKnowledge / listKnowledgeBases consult the (mocked) gateway catalog on
+  // every call; default it to "no shared bases" so local-only cases are unaffected.
+  listGatewayKbPseudoBasesMock.mockResolvedValue([])
+})
 
 describe('searchKnowledge', () => {
   it('assigns prefixed sequential citation ids across merged base results', async () => {
@@ -137,5 +164,148 @@ describe('manageKnowledge add for file type', () => {
         })
       })
     ])
+  })
+})
+
+// Gateway shared-KB routing: ids known to the gateway catalog (the virtual `ekp`
+// base, WeKnora-backed `kb-*` ids) must go to gatewayKbSearch, not the local
+// KnowledgeService — and read/manage/outline must steer to kb_search.
+describe('searchKnowledge routes gateway kb ids', () => {
+  it('routes a gateway id to gatewayKbSearch, not KnowledgeService', async () => {
+    gatewayKbSearchMock.mockResolvedValueOnce([
+      {
+        pageContent: '正文',
+        score: 0.9,
+        scoreKind: 'relevance',
+        rank: 1,
+        chunkId: 'k1',
+        itemId: '01900000-0000-7000-8000-000000000001',
+        metadata: {
+          itemId: '01900000-0000-7000-8000-000000000001',
+          itemType: 'file',
+          source: '202-建筑一院',
+          chunkIndex: 0,
+          tokenCount: 10
+        },
+        title: '通知A'
+      }
+    ])
+    const output = await searchKnowledge('资质', ['ekp'], [])
+    expect(gatewayKbSearchMock).toHaveBeenCalledWith('ekp', '资质')
+    expect(knowledgeSearchMock).not.toHaveBeenCalled()
+    expect(Array.isArray(output)).toBe(true)
+    expect((output as Array<{ baseId: string }>)[0].baseId).toBe('ekp')
+  })
+
+  it('mixed local+gateway ids each hit their own backend, merged and sorted by score', async () => {
+    gatewayKbSearchMock.mockResolvedValueOnce([
+      {
+        pageContent: 'gw',
+        score: 0.5,
+        scoreKind: 'relevance',
+        rank: 1,
+        chunkId: 'k2',
+        itemId: '01900000-0000-7000-8000-000000000002',
+        metadata: {
+          itemId: '01900000-0000-7000-8000-000000000002',
+          itemType: 'file',
+          source: 's',
+          chunkIndex: 0,
+          tokenCount: 4
+        },
+        title: 'T2'
+      }
+    ])
+    knowledgeSearchMock.mockResolvedValueOnce([
+      { pageContent: 'local', score: 0.9, conceptId: 'c1', title: 'Doc', metadata: { itemType: 'file' } }
+    ])
+    const output = (await searchKnowledge('q', ['base1', 'ekp'], [])) as Array<{ baseId: string; score: number }>
+    expect(output).toHaveLength(2)
+    expect(output[0].score).toBeGreaterThanOrEqual(output[output.length - 1].score)
+    expect(output.map((r) => r.baseId)).toContain('ekp')
+  })
+
+  it('gateway failure alone yields { error } (all targeted bases failed)', async () => {
+    gatewayKbSearchMock.mockRejectedValueOnce(new Error('unavailable'))
+    const output = await searchKnowledge('q', ['ekp'], [])
+    expect(output).toHaveProperty('error')
+  })
+
+  it('cold start: routes a gateway id even before any catalog fetch has populated the id cache', async () => {
+    // The catalog returns the id but the (simulated) isGatewayKbId cache would
+    // already know it too; the real cold-start hazard is the reverse — exercise
+    // that by making the catalog the ONLY source here via a stale-cache id the
+    // static mock doesn't recognize ('kb-202' IS recognized, so use catalog-only id).
+    listGatewayKbPseudoBasesMock.mockResolvedValueOnce([{ id: 'kb-777', name: 'shared' } as never])
+    gatewayKbSearchMock.mockResolvedValueOnce([])
+    // 'kb-777' is not in the static isGatewayKbId mock — routing must come from
+    // the fetched catalog membership, not isGatewayKbId alone.
+    const output = await searchKnowledge('q', ['kb-777'], [])
+    expect(gatewayKbSearchMock).toHaveBeenCalledWith('kb-777', 'q')
+    expect(knowledgeSearchMock).not.toHaveBeenCalled()
+    expect(output).toEqual([])
+  })
+})
+
+describe('kb_list includes gateway pseudo bases', () => {
+  it('appends shared catalog entries to the base list on the last page', async () => {
+    listBasesForDiscoveryMock.mockReturnValueOnce({ items: [], total: 0 })
+    listGatewayKbPseudoBasesMock.mockResolvedValueOnce([
+      {
+        id: 'ekp',
+        name: 'ekp数据检索',
+        groupId: null,
+        dimensions: null,
+        embeddingModelId: null,
+        status: 'completed',
+        error: null,
+        chunkSize: 1024,
+        chunkOverlap: 200,
+        chunkStrategy: 'structured',
+        chunkSeparator: '\\n\\n'
+      } as never
+    ])
+    const output = await listOrOutlineKnowledge({ limit: 50 }, [])
+    if (!('items' in output)) throw new Error('expected list mode')
+    expect(output.items.map((i) => i.id)).toContain('ekp')
+    expect(output.items.find((i) => i.id === 'ekp')?.itemsUnavailable).toBe(true)
+  })
+
+  it('does not append gateway entries on a non-final page (cursor math stays local)', async () => {
+    listBasesForDiscoveryMock.mockReturnValueOnce({ items: [], total: 9, nextCursor: 'c2' })
+    // No gateway stub needed: a non-final page must not consult the catalog at all.
+    const output = await listOrOutlineKnowledge({ limit: 50 }, [])
+    if (!('items' in output)) throw new Error('expected list mode')
+    expect(output.items.map((i) => i.id)).not.toContain('ekp')
+    expect(output.nextCursor).toBe('c2')
+  })
+
+  it('degrades to local-only listing when the gateway catalog fails', async () => {
+    listBasesForDiscoveryMock.mockReturnValueOnce({ items: [], total: 0 })
+    listGatewayKbPseudoBasesMock.mockRejectedValueOnce(new Error('gateway down'))
+    const output = await listOrOutlineKnowledge({ limit: 50 }, [])
+    if (!('items' in output)) throw new Error('expected list mode')
+    expect(output.items).toHaveLength(0)
+    expect(output).not.toHaveProperty('error')
+  })
+})
+
+describe('gateway ids steer read/manage/outline to kb_search', () => {
+  const steer = (id: string) =>
+    `Knowledge base "${id}" is a shared (gateway) knowledge base — only kb_search is supported. Use kb_search with baseIds: ["${id}"].`
+
+  it('kb_read steers for a gateway baseId', async () => {
+    const output = await readOrGrepConcept({ baseId: 'ekp', conceptId: 'c1' }, [])
+    expect(output).toEqual({ error: steer('ekp') })
+  })
+
+  it('kb_manage steers for a gateway baseId', async () => {
+    const output = await manageKnowledge({ action: 'add', baseId: 'ekp', type: 'note', content: 'x' }, [])
+    expect(output).toEqual({ error: steer('ekp') })
+  })
+
+  it('kb_list outline mode steers for a gateway baseId', async () => {
+    const output = await listOrOutlineKnowledge({ baseId: 'ekp', limit: 50 }, [])
+    expect(output).toEqual({ error: steer('ekp') })
   })
 })

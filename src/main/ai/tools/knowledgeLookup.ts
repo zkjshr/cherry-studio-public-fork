@@ -26,6 +26,7 @@ import * as z from 'zod'
 import { application } from '@application'
 import { loggerService } from '@logger'
 import { citeId, newCitePrefix } from '@main/ai/utils/citationIds'
+import { gatewayKbSearch, isGatewayKbId, listGatewayKbPseudoBases } from '@main/features/knowledge'
 import type {
   KbGrepOutput,
   KbListInput,
@@ -163,6 +164,16 @@ function isConceptLookupError(output: object): output is KnowledgeLookupError {
   return 'error' in output
 }
 
+/**
+ * Steer for a gateway (shared) base id on the deep-read / mutation tools: a
+ * gateway base has no local chunks to read or mutate — only kb_search semantics.
+ */
+function gatewayKbSteer(baseId: string): KnowledgeLookupError {
+  return {
+    error: `Knowledge base "${baseId}" is a shared (gateway) knowledge base — only kb_search is supported. Use kb_search with baseIds: ["${baseId}"].`
+  }
+}
+
 export async function searchKnowledge(
   query: string,
   baseIds: string[],
@@ -179,17 +190,28 @@ export async function searchKnowledge(
 
   if (targetIds.length === 0) return []
 
+  // Cold-start-safe gateway routing: `isGatewayKbId` consults an id cache that is
+  // empty until the first gateway catalog fetch succeeds, so an early kb_search
+  // (app restart, cache cold) would mis-route a shared id to the local service and
+  // get a NOT_FOUND. Seed the catalog first — it is TTL-cached (at most one HTTP
+  // call per 5 minutes) and silently degrades to [] — then route by membership in
+  // the returned id list, falling back to `isGatewayKbId` for ids the catalog did
+  // not return (e.g. a stale cache from an earlier successful fetch).
+  const gatewayBaseIds = new Set((await listGatewayKbPseudoBases().catch(() => [])).map((base) => base.id))
+  const routeGateway = (baseId: string) => gatewayBaseIds.has(baseId) || isGatewayKbId(baseId)
+
   const knowledgeService = application.get('KnowledgeService')
   const perBase = await Promise.all(
     targetIds.map(async (baseId) => {
+      const isGateway = routeGateway(baseId)
       try {
-        const results = await knowledgeService.search(baseId, query)
+        const results = isGateway ? await gatewayKbSearch(baseId, query) : await knowledgeService.search(baseId, query)
         // Tag each hit with the base it came from: the flatMap below loses the closure, and
         // `conceptId` alone is only unique within one base.
         return { ok: true as const, results: results.map((result) => ({ result, baseId })) }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        logger.warn('KnowledgeService.search failed', { baseId, query, error: message })
+        logger.warn('Knowledge search failed', { baseId, query, gateway: isGateway, error: message })
         return { ok: false as const, error: message }
       }
     })
@@ -263,6 +285,7 @@ async function readConcept(
     logger.warn('kb_read targeted a base outside the assistant scope', { baseId, allowedIds })
     return { error: `Knowledge base "${baseId}" is not available to this assistant.` }
   }
+  if (isGatewayKbId(baseId)) return gatewayKbSteer(baseId)
   try {
     const result = await application.get('KnowledgeService').readConcept(baseId, conceptId, range)
     return {
@@ -322,6 +345,7 @@ async function grepConcept(
     logger.warn('kb_read (grep mode) targeted a base outside the assistant scope', { baseId, allowedIds })
     return { error: `Knowledge base "${baseId}" is not available to this assistant.` }
   }
+  if (isGatewayKbId(baseId)) return gatewayKbSteer(baseId)
   try {
     const result = await application.get('KnowledgeService').grepConcept(baseId, conceptId, options)
     return {
@@ -419,6 +443,7 @@ function readTree(
     logger.warn('kb_list (outline mode) targeted a base outside the assistant scope', { baseId, allowedIds })
     return { error: `Knowledge base "${baseId}" is not available to this assistant.` }
   }
+  if (isGatewayKbId(baseId)) return gatewayKbSteer(baseId)
   try {
     const tree = application.get('KnowledgeService').getOrganizationTree(baseId, options)
     return {
@@ -491,6 +516,7 @@ export async function manageKnowledge(
     logger.warn('kb_manage targeted a base outside the assistant scope', { baseId: input.baseId, allowedIds })
     return { error: `Knowledge base "${input.baseId}" is not available to this assistant.` }
   }
+  if (isGatewayKbId(input.baseId)) return gatewayKbSteer(input.baseId)
   try {
     const service = application.get('KnowledgeService')
     switch (input.action) {
@@ -639,9 +665,37 @@ async function listKnowledgeBases(
       page.items.map((base) => queue.add(() => buildOutputItem(base, knowledgeService), { throwOnTimeout: true }))
     )
 
+    // Append the gateway catalog's shared pseudo bases. Only on the LAST page
+    // (`nextCursor` absent): merging mid-pagination would inflate `total` and make
+    // cursor continuation math inconsistent with the appended tail. A catalog
+    // failure degrades silently to local-only listing (mirrors fetchCatalog's
+    // own silent-degrade posture) — kb_list must not fail because the gateway is down.
+    let gatewayItems: KbListOutputItem[] = []
+    if (!page.nextCursor) {
+      try {
+        const gatewayBases = await listGatewayKbPseudoBases()
+        const localIds = new Set(page.items.map((base) => base.id))
+        gatewayItems = gatewayBases
+          .filter((base) => !localIds.has(base.id))
+          .map((base) => ({
+            id: base.id,
+            name: base.name,
+            groupId: null,
+            status: 'completed' as const,
+            itemCount: 0,
+            itemsUnavailable: true,
+            sampleSources: []
+          }))
+      } catch (error) {
+        logger.warn('Gateway KB catalog unavailable for kb_list; listing local bases only', {
+          error: error instanceof Error ? error.message : String(error)
+        })
+      }
+    }
+
     return {
-      items,
-      total: page.total,
+      items: [...items, ...gatewayItems],
+      total: page.total + gatewayItems.length,
       ...(page.nextCursor ? { nextCursor: page.nextCursor } : {})
     }
   } catch (error) {
