@@ -1,9 +1,10 @@
-r"""共享知识库目录端点测试：^\d{3}- 部门库命名约定分类、X-Client-Token 鉴权、
-WeKnora 不可达降级为空列表。"""
+r"""共享知识库目录端点测试：^\d{3}- 部门库命名约定分类、按 X-Client-User 的
+部门可见性过滤、X-Client-Token 鉴权、WeKnora 不可达降级为空列表。"""
 import httpx
 import respx
 from fastapi.testclient import TestClient
 
+from gateway import enterprise
 from gateway.app import app
 from gateway.config import settings
 
@@ -21,17 +22,51 @@ def _mock_kbs(payload: list[dict]) -> None:
 @respx.mock
 def test_kbs_classified_by_dept_prefix():
     _mock_kbs([
-        {"id": "1", "name": "101-结构所规范库"},
-        {"id": "2", "name": "通用设计资料"},
+        {"id": "1", "name": "101-结构所规范库", "description": "部门规范"},
+        {"id": "2", "name": "通用设计资料", "description": ""},
         {"id": "3", "name": "021-岩一院图集"},
     ])
-    resp = client.get("/knowledge/api/kbs", headers=CLIENT)
+    enterprise.save_settings({"user_departments": {"51-zhang-kj": ["101", "021"]}})
+    try:
+        resp = client.get("/knowledge/api/kbs", headers={**CLIENT, "X-Client-User": "51-zhang-kj"})
+    finally:
+        enterprise.save_settings({"user_departments": {}})
     assert resp.status_code == 200
-    assert resp.json() == {"kbs": [
-        {"id": "1", "name": "101-结构所规范库", "scope": "dept"},
-        {"id": "2", "name": "通用设计资料", "scope": "public"},
-        {"id": "3", "name": "021-岩一院图集", "scope": "dept"},
-    ]}
+    body = resp.json()["kbs"]
+    # 虚拟库 ekp 恒在目录首位；真实库按部门/公共分类在其后。
+    assert body[0]["id"] == "ekp" and body[0]["scope"] == "public"
+    assert body[1:] == [
+        {"id": "1", "name": "101-结构所规范库", "description": "部门规范", "scope": "dept"},
+        {"id": "2", "name": "通用设计资料", "description": "", "scope": "public"},
+        {"id": "3", "name": "021-岩一院图集", "description": "", "scope": "dept"},
+    ]
+
+
+@respx.mock
+def test_kbs_dept_filtered_by_user_mapping():
+    _mock_kbs([
+        {"id": "1", "name": "202-工程技术研究院"},
+        {"id": "2", "name": "101-市场运营部"},
+        {"id": "3", "name": "公共制度汇编"},
+    ])
+    enterprise.save_settings({"user_departments": {"51-zhang-kj": "202"}})
+    try:
+        # 登记用户：部门分区只剩本部门；公共库不受影响。
+        resp = client.get("/knowledge/api/kbs", headers={**CLIENT, "X-Client-User": "51-zhang-kj"})
+        assert resp.json()["kbs"][1:] == [
+            {"id": "1", "name": "202-工程技术研究院", "description": "", "scope": "dept"},
+            {"id": "3", "name": "公共制度汇编", "description": "", "scope": "public"},
+        ]
+        # 未登记用户：看不到任何部门库（首位虚拟库除外）。
+        resp = client.get("/knowledge/api/kbs", headers={**CLIENT, "X-Client-User": "someone-else"})
+        assert [kb["name"] for kb in resp.json()["kbs"] if kb["id"] != "ekp"] == ["公共制度汇编"]
+        # 多部门支持（list 值）。
+        enterprise.save_settings({"user_departments": {"51-zhang-kj": ["202", "101"]}})
+        resp = client.get("/knowledge/api/kbs", headers={**CLIENT, "X-Client-User": "51-zhang-kj"})
+        assert [kb["name"] for kb in resp.json()["kbs"] if kb["scope"] == "dept"] == [
+            "202-工程技术研究院", "101-市场运营部"]
+    finally:
+        enterprise.save_settings({"user_departments": {}})
 
 
 @respx.mock
@@ -39,7 +74,8 @@ def test_kbs_empty_upstream():
     _mock_kbs([])
     resp = client.get("/knowledge/api/kbs", headers=CLIENT)
     assert resp.status_code == 200
-    assert resp.json() == {"kbs": []}
+    # 上游空列表时目录只剩虚拟库 ekp。
+    assert [kb["id"] for kb in resp.json()["kbs"] if kb["id"] != "ekp"] == []
 
 
 @respx.mock
