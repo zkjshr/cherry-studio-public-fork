@@ -10,7 +10,8 @@ import {
   getKnowledgeNoteFirstLine,
   getKnowledgePathBasename,
   KnowledgeRelativePathSchema,
-  KnowledgeSearchResultSchema
+  KnowledgeSearchResultSchema,
+  SharedKnowledgeBaseSchema
 } from '../knowledge'
 
 describe('KnowledgeRelativePathSchema', () => {
@@ -227,5 +228,36 @@ describe('getKnowledgeItemConflictKey', () => {
     expect(
       getKnowledgeItemConflictKey({ type: 'url', data: { url: 'https://x.com', relativePath: 'Page Title.md' } })
     ).toBe('https://x.com')
+  })
+})
+
+describe('SharedKnowledgeBaseSchema', () => {
+  // The client partitions gateway ids from local base ids by id shape
+  // (resolveKnowledgeBaseScope): local base ids are uuidv4, so a shared-kb wire
+  // id must never be. The gateway namespaces WeKnora's uuid ids as `weknora:<uuid>`.
+  it('accepts the virtual ekp wire id', () => {
+    expect(SharedKnowledgeBaseSchema.safeParse({ id: 'ekp', name: 'ekp数据检索', scope: 'public' }).success).toBe(true)
+  })
+
+  it('accepts a namespaced WeKnora id', () => {
+    expect(
+      SharedKnowledgeBaseSchema.safeParse({
+        id: 'weknora:6f9619ff-8b86-4d01-b42d-00cf4fc964ff',
+        name: '公共规范库',
+        scope: 'dept'
+      }).success
+    ).toBe(true)
+  })
+
+  it('accepts a plain non-uuid wire id', () => {
+    expect(SharedKnowledgeBaseSchema.safeParse({ id: 'kb-202', name: '部门制度库', scope: 'dept' }).success).toBe(true)
+  })
+
+  it.each([
+    ['a bare uuidv4 (gateway failed to namespace a WeKnora id)', '6f9619ff-8b86-4d01-b42d-00cf4fc964ff'],
+    ['an uppercase uuidv4', '6F9619FF-8B86-4D01-B42D-00CF4FC964FF'],
+    ['a braced uuidv4-shaped string is still hyphen-structured', '6f9619ff-8b86-4d01-b42d-00cf4fc964f0']
+  ])('rejects %s', (_label, id) => {
+    expect(SharedKnowledgeBaseSchema.safeParse({ id, name: 'x', scope: 'public' }).success).toBe(false)
   })
 })

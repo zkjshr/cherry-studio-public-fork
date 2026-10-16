@@ -76,8 +76,9 @@ export function isGatewayKbId(id: string): boolean {
 /**
  * 目录 → 伪 KnowledgeBase 列表（网关顺序原样保留，虚拟 ekp 库排第一）。
  * 伪对象只存在于内存，绝不写入 knowledge_base 表；id 用 wire id 原样
- * （如 `ekp`、`kb-202`），因此不是 uuidv4——调用方（knowledgeLookup 分流）
- * 只把它当不透明 key，绝不落库。
+ * （如 `ekp`、`weknora:<uuid>`——SharedKnowledgeBaseSchema 契约保证必非
+ * uuidv4），因此调用方（knowledgeLookup 分流、knowledgeScope 分区）只把它
+ * 当不透明 key，绝不落库。
  */
 export async function listGatewayKbPseudoBases(): Promise<KnowledgeBase[]> {
   const kbs = await fetchCatalog()

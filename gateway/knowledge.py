@@ -42,6 +42,20 @@ def _dept_prefixes_for(user: str) -> list[str]:
 # gateway 保留的虚拟库 wire id——不是 WeKnora id；检索时在本用户可见范围内展开
 VIRTUAL_KB_ID = "ekp"
 
+# WeKnora 库 wire id 的命名空间前缀。WeKnora 上游的库 id 本身是 uuidv4，而客户端
+# 契约（SharedKnowledgeBaseSchema）要求共享库 wire id 绝不是 uuidv4——客户端按
+# id 形状区分网关库与本地库（本地库 id 是 uuidv4）。因此目录下发时一律加前缀，
+# 检索入口剥前缀后还原为上游 id（也接受裸 id，兼容旧客户端）。
+WEKNORA_ID_PREFIX = "weknora:"
+
+
+def _namespaced_kb_id(kb_id: str) -> str:
+    return f"{WEKNORA_ID_PREFIX}{kb_id}"
+
+
+def _strip_kb_id_prefix(kb_id: str) -> str:
+    return kb_id[len(WEKNORA_ID_PREFIX):] if kb_id.startswith(WEKNORA_ID_PREFIX) else kb_id
+
 
 def _virtual_kb_entry() -> dict | None:
     cfg = get_settings().get("virtual_kb") or {}
@@ -84,7 +98,8 @@ async def client_kbs(x_client_user: str = Header(default="")) -> dict:
         # 下发（接入与否由客户端决定）。
         if scope == "dept" and not name.startswith(prefixes):
             continue
-        out.append({"id": kb["id"], "name": name, "description": kb.get("description") or "", "scope": scope})
+        out.append({"id": _namespaced_kb_id(kb["id"]), "name": name,
+                    "description": kb.get("description") or "", "scope": scope})
     return {"kbs": out}
 
 
@@ -113,10 +128,13 @@ async def client_kb_search(
             requested = [str(k) for k in requested] if isinstance(requested, list) else []
             resolved: list[str] = []
             for kb_id in requested:
-                if kb_id == VIRTUAL_KB_ID:
+                # 目录下发的 WeKnora id 带 weknora: 前缀，这里剥掉还原上游 id；
+                # 裸 id（旧客户端）原样接受。
+                upstream_id = _strip_kb_id_prefix(kb_id)
+                if upstream_id == VIRTUAL_KB_ID:
                     resolved.extend(_visible_kb_ids(all_kbs, x_client_user, include_public=False))
-                elif kb_id in visible:
-                    resolved.append(kb_id)
+                elif upstream_id in visible:
+                    resolved.append(upstream_id)
             # 去重保序；可见请求与 ekp 展开皆为空时一律 no_result——绝不以空集
             # 进入 retrieve（其空列表语义是扇出全部部门库），recent 分支同受此门约束。
             resolved = list(dict.fromkeys(resolved))

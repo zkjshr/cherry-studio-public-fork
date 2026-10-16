@@ -1,4 +1,6 @@
-"""/knowledge/api/search：调用时鉴权（用户×库交集）+ 虚拟库 ekp 展开。"""
+"""/knowledge/api/search：调用时鉴权（用户×库交集）+ 虚拟库 ekp 展开。
+WeKnora 库 id 在目录侧带 weknora: 前缀下发；检索请求剥前缀还原上游 id
+（裸 id 兼容旧客户端）。"""
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -39,10 +41,18 @@ def test_search_requires_token():
 
 
 def test_search_filters_kb_ids_by_user_scope():
+    # 目录契约：客户端只见过 weknora: 前缀 id，检索请求原样回传。
     r = client.post("/knowledge/api/search", headers={**_H, "X-Client-User": "51-zhang-kj"},
-                    json={"kb_ids": ["kb-202", "kb-101"], "query": "资质"})
+                    json={"kb_ids": ["weknora:kb-202", "weknora:kb-101"], "query": "资质"})
     assert r.status_code == 200
     # kb-101 不在该用户可见集，被静默剔除——扇出只打 kb-202（fake_retrieve 回显 kb_ids[0]）
+    assert r.json()["chunks"][0]["kb_id"] == "kb-202"
+
+
+def test_search_accepts_bare_ids_for_old_clients():
+    r = client.post("/knowledge/api/search", headers={**_H, "X-Client-User": "51-zhang-kj"},
+                    json={"kb_ids": ["kb-202"], "query": "资质"})
+    assert r.status_code == 200
     assert r.json()["chunks"][0]["kb_id"] == "kb-202"
 
 
@@ -64,7 +74,7 @@ def test_virtual_ekp_unregistered_user_no_result():
 
 def test_empty_query_rejected():
     r = client.post("/knowledge/api/search", headers={**_H, "X-Client-User": "51-zhang-kj"},
-                    json={"kb_ids": ["kb-202"], "query": "  "})
+                    json={"kb_ids": ["weknora:kb-202"], "query": "  "})
     assert r.status_code == 422 or r.json()["mode"] == "no_result"
 
 
@@ -78,5 +88,5 @@ def test_recent_requires_some_visible_kb():
 def test_recent_with_visible_kb_reaches_retrieve():
     # 登记用户 + 可见真实库：recent=true 正常放行
     r = client.post("/knowledge/api/search", headers={**_H, "X-Client-User": "51-zhang-kj"},
-                    json={"kb_ids": ["kb-202"], "query": "x", "recent": True})
+                    json={"kb_ids": ["weknora:kb-202"], "query": "x", "recent": True})
     assert r.json()["mode"] == "ok"

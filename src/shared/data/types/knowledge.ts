@@ -912,12 +912,30 @@ export function getKnowledgeItemConflictKey(item: KnowledgeItemTitleSource): str
 // ── 企业共享知识库（网关 /knowledge/api/kbs 下发，客户端只读） ──
 
 /**
+ * uuidv4 shape — the exact pattern `KnowledgeBaseIdSchema` (z.uuidv4) accepts. Shared-kb wire ids
+ * MUST NOT match it: resolveKnowledgeBaseScope partitions gateway ids from local base ids by id
+ * shape, so a uuidv4-shaped gateway id would be misrouted to the local vector service.
+ */
+const UUIDV4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+/**
  * One enterprise shared knowledge base as the gateway lists it. `scope` is the
  * gateway's dept/public classification (`^\d{3}-` name prefix = a department
  * library); the client never re-classifies.
+ *
+ * The id is the gateway's wire id and is contractually never uuidv4: the virtual
+ * 「ekp数据检索」base is `ekp`, and real WeKnora libraries (whose upstream ids ARE
+ * uuidv4) are namespaced `weknora:<uuid>` by the gateway at the source (see
+ * gateway/knowledge.py). A raw uuidv4 id here means the gateway stopped
+ * namespacing — reject rather than let it masquerade as a local base id.
  */
 export const SharedKnowledgeBaseSchema = z.object({
-  id: z.string().min(1),
+  id: z
+    .string()
+    .min(1)
+    .refine((id) => !UUIDV4_PATTERN.test(id), {
+      message: 'Shared KB wire id must not be uuidv4-shaped: the gateway namespaces WeKnora ids as weknora:<uuid>'
+    }),
   name: z.string(),
   /** WeKnora 库描述；旧网关不下发该键，故可缺省。 */
   description: z.string().optional(),
@@ -949,8 +967,8 @@ export type SharedKnowledgeBasesPayload = z.infer<typeof SharedKnowledgeBasesPay
 /**
  * 网关共享库物化出的伪 KnowledgeBase（gatewayKbSearch.pseudoBase，内存对象、
  * 绝不落库）。结构与 KnowledgeBase 完全一致，唯一区别是 id 用网关 wire id
- * （`ekp`、WeKnora uuid）原样——不是 uuidv4，因此不能过 KnowledgeBaseIdSchema，
- * composer/scope 只把它当不透明 key。
+ * 原样——按 SharedKnowledgeBaseSchema 契约必非 uuidv4（`ekp`、`weknora:<uuid>`），
+ * 因此不能过 KnowledgeBaseIdSchema，composer/scope 只把它当不透明 key。
  */
 export const GatewayPseudoKnowledgeBaseSchema = KnowledgeBaseEntitySchema.extend({
   id: z.string().trim().min(1)

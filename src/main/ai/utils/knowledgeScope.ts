@@ -4,11 +4,16 @@ import { KnowledgeBaseIdSchema } from '@shared/data/types/knowledge'
 const logger = loggerService.withContext('knowledgeScope')
 
 /**
- * Local (persisted) knowledge base ids are uuidv4 — `KnowledgeBaseIdSchema` enforces it at every
- * write path. Gateway shared bases (企业共享库, incl. the virtual「ekp数据检索」) materialize as
- * in-memory pseudo bases whose ids are the gateway wire ids (`ekp`, WeKnora uuids) and are never
- * uuidv4 (see gatewayKbSearch.pseudoBase). So id shape is the reliable local/gateway partition:
- * anything that fails the uuidv4 schema is gateway-shaped.
+ * Local vs gateway id partition — an ENFORCED wire contract, not a convention:
+ * - local (persisted) base ids are uuidv4, guaranteed by `KnowledgeBaseIdSchema` (z.uuidv4) on
+ *   every write path in `@shared/data/types/knowledge`;
+ * - gateway shared-base wire ids are guaranteed NON-uuidv4 by `SharedKnowledgeBaseSchema` (same
+ *   file), which rejects uuidv4-shaped ids — the virtual「ekp数据检索」base is `ekp`, and real
+ *   WeKnora libraries (whose upstream ids ARE uuidv4) are namespaced `weknora:<uuid>` by the
+ *   gateway at the source (gateway/knowledge.py).
+ * The shape check below therefore never misclassifies. Legacy edge: an id chosen under a
+ * pre-contract gateway could be uuidv4 yet gateway-owned; it then gets local narrowing semantics —
+ * the safe direction, since that can only ever narrow, never widen, the scope.
  */
 function isGatewayShapedId(id: string): boolean {
   return !KnowledgeBaseIdSchema.safeParse(id).success
