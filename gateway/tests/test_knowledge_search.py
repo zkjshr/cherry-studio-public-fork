@@ -26,9 +26,10 @@ def _patch(monkeypatch):
         return _FAKE_KBS
     monkeypatch.setattr(knowledge_mod.weknora, "list_kbs", fake_list_kbs)
     async def fake_retrieve(c, q, kb_ids, recent=False):
-        return "ok", [{"id": "c1", "kb_id": kb_ids[0], "kb_name": "", "title": "T",
-                       "file_name": "", "score": 0.5, "content": "正文"}], \
-               [{"id": "c1", "kb_id": kb_ids[0], "kb_name": "", "title": "T"}]
+        # 每个 kb_id 都回显一条 chunk，交集/展开若混入不可见 id 立即暴露
+        return "ok", [{"id": f"c-{k}", "kb_id": k, "kb_name": "", "title": "T",
+                       "file_name": "", "score": 0.5, "content": "正文"} for k in kb_ids], \
+               [{"id": f"c-{k}", "kb_id": k, "kb_name": "", "title": "T"} for k in kb_ids]
     monkeypatch.setattr(knowledge_mod.kb_search, "retrieve", fake_retrieve)
 
 
@@ -65,3 +66,17 @@ def test_empty_query_rejected():
     r = client.post("/knowledge/api/search", headers={**_H, "X-Client-User": "51-zhang-kj"},
                     json={"kb_ids": ["kb-202"], "query": "  "})
     assert r.status_code == 422 or r.json()["mode"] == "no_result"
+
+
+def test_recent_requires_some_visible_kb():
+    # 未登记用户：即便 recent=true，可见集为空也绝不能进入 retrieve 扇出
+    r = client.post("/knowledge/api/search", headers={**_H, "X-Client-User": "nobody"},
+                    json={"kb_ids": ["ekp"], "query": "x", "recent": True})
+    assert r.json()["mode"] == "no_result"
+
+
+def test_recent_with_visible_kb_reaches_retrieve():
+    # 登记用户 + 可见真实库：recent=true 正常放行
+    r = client.post("/knowledge/api/search", headers={**_H, "X-Client-User": "51-zhang-kj"},
+                    json={"kb_ids": ["kb-202"], "query": "x", "recent": True})
+    assert r.json()["mode"] == "ok"

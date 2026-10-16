@@ -109,16 +109,18 @@ async def client_kb_search(
             except (httpx.HTTPError, ValueError):
                 return {"mode": "unavailable", "chunks": [], "sources": []}
             visible = set(_visible_kb_ids(all_kbs, x_client_user, include_public=True))
-            requested = [str(k) for k in body.get("kb_ids") or []]
+            requested = body.get("kb_ids")
+            requested = [str(k) for k in requested] if isinstance(requested, list) else []
             resolved: list[str] = []
             for kb_id in requested:
                 if kb_id == VIRTUAL_KB_ID:
                     resolved.extend(_visible_kb_ids(all_kbs, x_client_user, include_public=False))
                 elif kb_id in visible:
                     resolved.append(kb_id)
-            # 去重保序；既无可见请求也无 ekp 展开时 no_result
+            # 去重保序；可见请求与 ekp 展开皆为空时一律 no_result——绝不以空集
+            # 进入 retrieve（其空列表语义是扇出全部部门库），recent 分支同受此门约束。
             resolved = list(dict.fromkeys(resolved))
-            if not recent and not resolved:
+            if not resolved:
                 return {"mode": "no_result", "chunks": [], "sources": []}
             mode, chunks, sources = await kb_search.retrieve(client, query, resolved, recent=recent)
     except (httpx.HTTPError, ValueError):
