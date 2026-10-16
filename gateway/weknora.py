@@ -67,6 +67,7 @@ async def kb_hybrid_search(client: httpx.AsyncClient, kb_id: str, q: str, limit:
             "file_name": item.get("knowledge_filename") or "",
             "updated_at": None,
             "score": item.get("score"),
+            "content": item.get("content") or "",
         })
     return out
 
@@ -81,4 +82,8 @@ async def list_kbs(client: httpx.AsyncClient) -> list[dict]:
     items = resp.json().get("data") or []
     if isinstance(items, dict):
         items = items.get("items") or items.get("list") or []
-    return [{"id": k["id"], "name": k.get("name", "")} for k in items if k.get("id")]
+    return [
+        {"id": k["id"], "name": k.get("name", ""), "description": k.get("description") or ""}
+        for k in items
+        if k.get("id")
+    ]
