@@ -1,4 +1,4 @@
-import { Download, RefreshCw } from 'lucide-react'
+import { Download, PictureInPicture2, RefreshCw } from 'lucide-react'
 import type React from 'react'
 import { useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -60,6 +60,13 @@ const PopupContainer: React.FC<Props> = ({ open, resolve, id, description }) => 
     void cancel()
   }, [cancel, downloading, resolve])
 
+  const handleBackground = useCallback(() => {
+    // 关闭弹窗但让下载继续跑（主进程持有任务）；解析 false——调用方只当"模型还没
+    // 就绪"继续走，下载进度与完成状态由设置页的模型区（LocalModelRequirement）展示。
+    toast.success(t('knowledge.rag.download_background_toast'))
+    resolve(false)
+  }, [resolve, t])
+
   const handleOpenChange = useCallback(
     (next: boolean) => {
       if (!next) {
@@ -73,14 +80,16 @@ const PopupContainer: React.FC<Props> = ({ open, resolve, id, description }) => 
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         showCloseButton={false}
-        // Dismissing mid-download would leave it running with nothing on screen
-        // reporting it; Cancel is the only way out, and it actually stops the download.
-        closeOnOverlayClick={!downloading}
+        // Downloading 时点遮罩 = 后台下载（与按钮同义），不误伤下载任务。
+        closeOnOverlayClick={true}
         overlayClassName="z-[90]"
         className={cn('confirm-popup z-[90] gap-5 sm:max-w-lg')}
         onInteractOutside={(event) => {
           if (downloading) {
+            // 拦掉默认的 dismiss，改走后台下载路径——否则 onOpenChange(false) 会
+            // 落到 handleCancel 把下载取消掉。
             event.preventDefault()
+            handleBackground()
           }
         }}>
         <DialogHeader className="gap-3">
@@ -89,7 +98,7 @@ const PopupContainer: React.FC<Props> = ({ open, resolve, id, description }) => 
             <div className="min-w-0 flex-1">
               <DialogTitle className="text-base leading-6">{t('knowledge.rag.download_local_model')}</DialogTitle>
               <DialogDescription asChild>
-                <div className="wrap-anywhere mt-2 min-w-0 max-w-full text-muted-foreground text-sm leading-5">
+                <div className="mt-2 max-w-full min-w-0 text-sm leading-5 wrap-anywhere text-muted-foreground">
                   {description}
                 </div>
               </DialogDescription>
@@ -100,6 +109,12 @@ const PopupContainer: React.FC<Props> = ({ open, resolve, id, description }) => 
         {downloading ? <LocalModelDownloadProgress percent={percent} /> : null}
 
         <DialogFooter>
+          {downloading ? (
+            <Button variant="outline" onClick={handleBackground} className="gap-1" data-ui="local-model.background">
+              <PictureInPicture2 className="size-4" />
+              {t('knowledge.rag.download_background')}
+            </Button>
+          ) : null}
           <Button variant="outline" onClick={handleCancel}>
             {t('common.cancel')}
           </Button>
@@ -119,10 +134,8 @@ const PopupContainer: React.FC<Props> = ({ open, resolve, id, description }) => 
  * Ask to download a local model, then stay open and report the download.
  *
  * Resolves true only once the model is on disk, so a caller can gate on it — picking a
- * processor whose model never arrived would just fail later in the job. The plain
- * confirm this replaces closed on click and left the download running with nothing on
- * screen tracking it: the dropdown that started it is shut by then, and the settings
- * panel that shows progress is a page away.
+ * processor whose model never arrived would just fail later in the job. 下载中可以
+ * 「后台下载」收起弹窗（解析 false）：任务在主进程继续，进度在设置页的模型区可见。
  *
  * Not reusable as ConfirmActionPopup: that one disables Cancel while its action runs,
  * and a ~140 MB download has to stay interruptible.

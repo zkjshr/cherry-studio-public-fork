@@ -4,11 +4,12 @@ import { DataApiError, ErrorCode } from '@shared/data/api/errors'
 
 const mocks = vi.hoisted(() => ({
   getPersist: vi.fn(),
+  setPersist: vi.fn(),
   get: vi.fn()
 }))
 
 vi.mock('@data/CacheService', () => ({
-  cacheService: { getPersist: mocks.getPersist }
+  cacheService: { getPersist: mocks.getPersist, setPersist: mocks.setPersist }
 }))
 
 vi.mock('@data/DataApiService', () => ({
@@ -25,7 +26,9 @@ import {
 const notFoundError = () => new DataApiError(ErrorCode.NOT_FOUND, 'not found', 404)
 
 afterEach(() => {
-  vi.clearAllMocks()
+  // reset（而非 clear）：后台校验是 fire-and-forget，遗留的 mockOnce 队列会
+  // 泄漏进下一个用例，必须连同实现一起重置。
+  vi.resetAllMocks()
 })
 
 describe('resolveChatEntryTopicId', () => {
@@ -39,12 +42,18 @@ describe('resolveChatEntryTopicId', () => {
     expect(mocks.get).toHaveBeenCalledTimes(1)
   })
 
-  it('falls through to the latest topic when the last-used topic was deleted', async () => {
+  it('trusts the remembered topic immediately and validates in the background', async () => {
+    // 快速路径：缓存的 id 直接返回（tab 切换零等待）；失效校验是后台的——
+    // NOT_FOUND 时清掉缓存，下次进入回退到 latest。
     mocks.getPersist.mockReturnValue('topic-deleted')
     mocks.get.mockRejectedValueOnce(notFoundError()).mockResolvedValueOnce({ topic: { id: 'topic-latest' } })
 
-    await expect(resolveChatEntryTopicId()).resolves.toBe('topic-latest')
-    expect(mocks.get).toHaveBeenNthCalledWith(2, '/topics/latest')
+    await expect(resolveChatEntryTopicId()).resolves.toBe('topic-deleted')
+    await vi.waitFor(() => {
+      expect(mocks.setPersist).toHaveBeenCalledWith('ui.chat.last_used_topic_id', null)
+    })
+    expect(mocks.get).toHaveBeenCalledWith('/topics/topic-deleted')
+    expect(mocks.get).not.toHaveBeenCalledWith('/topics/latest')
   })
 
   it('asks for the latest topic when nothing is remembered', async () => {
@@ -72,13 +81,17 @@ describe('resolveChatEntryTopicId', () => {
     expect(mocks.get).toHaveBeenCalledTimes(2)
   })
 
-  it('rethrows non-NOT_FOUND validation errors instead of silently rebinding', async () => {
+  it('does not block entry when background validation fails with a non-NOT_FOUND error', async () => {
+    // 后台校验的非 NOT_FOUND 错误只被吞掉（保留缓存），绝不阻断进入。
     mocks.getPersist.mockReturnValue('topic-last')
     const serverError = new DataApiError(ErrorCode.INTERNAL_SERVER_ERROR, 'boom', 500)
     mocks.get.mockRejectedValue(serverError)
 
-    await expect(resolveChatEntryTopicId()).rejects.toBe(serverError)
-    expect(mocks.get).toHaveBeenCalledTimes(1)
+    await expect(resolveChatEntryTopicId()).resolves.toBe('topic-last')
+    await vi.waitFor(() => {
+      expect(mocks.get).toHaveBeenCalledTimes(1)
+    })
+    expect(mocks.setPersist).not.toHaveBeenCalled()
   })
 })
 
@@ -92,12 +105,16 @@ describe('resolveAgentEntrySessionId', () => {
     expect(mocks.get).toHaveBeenCalledWith('/agent-sessions/session-last')
   })
 
-  it('falls through to the latest session when the last-used session was deleted', async () => {
+  it('trusts the remembered session immediately and validates in the background', async () => {
     mocks.getPersist.mockReturnValue('session-deleted')
     mocks.get.mockRejectedValueOnce(notFoundError()).mockResolvedValueOnce({ session: { id: 'session-latest' } })
 
-    await expect(resolveAgentEntrySessionId()).resolves.toBe('session-latest')
-    expect(mocks.get).toHaveBeenNthCalledWith(2, '/agent-sessions/latest')
+    await expect(resolveAgentEntrySessionId()).resolves.toBe('session-deleted')
+    await vi.waitFor(() => {
+      expect(mocks.setPersist).toHaveBeenCalledWith('ui.agent.last_used_session_id', null)
+    })
+    expect(mocks.get).toHaveBeenCalledWith('/agent-sessions/session-deleted')
+    expect(mocks.get).not.toHaveBeenCalledWith('/agent-sessions/latest')
   })
 
   it('returns null when no sessions exist', async () => {

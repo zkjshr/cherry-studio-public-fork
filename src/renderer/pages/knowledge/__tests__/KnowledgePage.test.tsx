@@ -1424,26 +1424,23 @@ describe('KnowledgePage', () => {
     expect(screen.queryByTestId('detail-header')).not.toBeInTheDocument()
   })
 
-  it('shows the empty state when no knowledge bases are available', async () => {
+  it('renders the two-pane shell instead of an onboarding screen when no bases exist', async () => {
     mockUseKnowledgeBases.mockReturnValue({
       bases: [],
       isLoading: false,
       error: undefined,
       refetch: vi.fn()
     })
+    mockUseSharedKnowledgeBases.mockReturnValue({
+      payload: { kbs: [], chatTopicId: null },
+      isLoading: false
+    })
 
     render(<RoutedKnowledgePage />)
 
-    expect(screen.getByText('暂无知识库')).toBeInTheDocument()
-    expect(screen.getByText('与 AI 一起积累知识')).toBeInTheDocument()
-    expect(screen.queryByTestId('detail-header')).not.toBeInTheDocument()
-    // A full-screen page replaces the two-pane shell, so the navigator — and with it
-    // the only other way to create a base — is gone; the CTA has to carry creation.
-    expect(screen.queryByTestId('navigator-width')).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: '创建知识库' }))
-
-    expect(await screen.findByTestId('create-dialog')).toBeInTheDocument()
+    // 空库跳过"创建第一个知识库"引导页：直接进两栏外壳，侧栏分区即入口
+    expect(screen.queryByText('暂无知识库')).not.toBeInTheDocument()
+    expect(screen.getByTestId('base-navigator')).toBeInTheDocument()
   })
 
   it('still renders the navigator when only shared kbs exist', async () => {

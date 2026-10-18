@@ -2,9 +2,11 @@ import { createFileRoute, redirect } from '@tanstack/react-router'
 
 import AgentPage from '@renderer/pages/agents/AgentPage'
 import { parseAgentRouteSearch } from '@renderer/pages/agents/routeSearch'
+import ConversationEntrySkeleton from '@renderer/pages/entrySkeleton/ConversationEntrySkeleton'
 import { resolveAgentEntrySessionId, resolveAgentEntrySessionIdForAgent } from '@renderer/utils/conversationEntry'
 
 export const Route = createFileRoute('/app/agents')({
+  pendingComponent: ConversationEntrySkeleton,
   validateSearch: (search) => parseAgentRouteSearch(search),
   // Resolving before mount renders the final conversation in one pass. A sidebar
   // `?agentId=` entry must resume that agent, not the globally last-focused session.

@@ -61,7 +61,12 @@ describe('listSharedKnowledgeBases', () => {
         { status: 200 }
       )
     )
-    mockPreferenceReads([[{ value: ['a1', 'a2'] }], [{ value: { a2: { topicId: 'topic-9' } } }]])
+    // 读取顺序：① X-Client-User 用户名（readLocalUserName）→ ② 受管助手 id → ③ 置顶话题
+    mockPreferenceReads([
+      [{ value: '51-zhang-kj' }],
+      [{ value: ['a1', 'a2'] }],
+      [{ value: { a2: { topicId: 'topic-9' } } }]
+    ])
     await expect(listSharedKnowledgeBases()).resolves.toEqual({
       kbs: [
         { id: '1', name: '101-结构所规范库', scope: 'dept' },

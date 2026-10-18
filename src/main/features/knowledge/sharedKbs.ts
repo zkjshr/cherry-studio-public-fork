@@ -33,7 +33,9 @@ export async function listSharedKnowledgeBases(): Promise<SharedKnowledgeBasesPa
   let kbs: SharedKnowledgeBase[]
   try {
     const resp = await net.fetch(`${settings.serverUrl}/knowledge/api/kbs`, {
-      headers: { 'X-Client-Token': settings.token },
+      // X-Client-User：本地用户名（如 51-zhang-kj），网关据此把部门库过滤到
+      // 本人所在部门（user_departments 映射）；未登记用户部门分区为空。
+      headers: { 'X-Client-Token': settings.token, 'X-Client-User': readLocalUserName() },
       redirect: 'follow',
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
     })
@@ -71,6 +73,12 @@ function findPinnedManagedTopicId(): string | null {
     }
   }
   return null
+}
+
+/** 本地用户名（app.user.name，如 51-zhang-kj）；读不到时为空串（网关视为未登记）。 */
+function readLocalUserName(): string {
+  const value = readUndeclaredPreferenceRow('app.user.name')
+  return typeof value === 'string' ? value : ''
 }
 
 function readUndeclaredPreferenceRow(key: string): unknown {

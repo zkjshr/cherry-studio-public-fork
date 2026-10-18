@@ -1,6 +1,28 @@
 import { useNavigate } from '@tanstack/react-router'
-import { ArrowLeft, Briefcase, Loader2, PackageOpen, RefreshCw, Settings2, Trash2 } from 'lucide-react'
-import type { FC } from 'react'
+import {
+  ArrowLeft,
+  BarChart3,
+  Briefcase,
+  Code2,
+  Coffee,
+  Compass,
+  Database,
+  Globe,
+  GraduationCap,
+  HardDrive,
+  Languages,
+  Loader2,
+  PackageOpen,
+  PenLine,
+  RefreshCw,
+  Scale,
+  Search,
+  Server,
+  Settings2,
+  Trash2,
+  TrendingUp
+} from 'lucide-react'
+import type { FC, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -27,23 +49,44 @@ import {
   useAssistantCatalogPresets,
   type AssistantCatalogPreset
 } from '@renderer/hooks/useAssistantCatalogPresets'
+import { useMcpServers } from '@renderer/hooks/useMcpServer'
 import { useSkillCatalog } from '@renderer/hooks/useSkills'
 import { toast } from '@renderer/services/toast'
+import { readSubscribedKbIds, writeSubscribedKbIds } from '@renderer/utils/dataMarket'
 import { cn } from '@renderer/utils/style'
+import type { SharedKnowledgeBase } from '@shared/data/types/knowledge'
+import type { McpServer } from '@shared/data/types/mcpServer'
 import type { MarketCatalogPlugin, MarketCatalogResult, MarketInstalledRecord } from '@shared/types/marketplace'
+import { ENTERPRISE_MCP_NAME_PREFIX } from '@shared/utils/enterprise'
 
-import { MarketSearchInput, PluginIcon } from './shared'
+import { useSharedKnowledgeBases } from '../knowledge/hooks/useSharedKnowledgeBases'
+import { DATA_MARKET_CATEGORIES, matchMarketCategory, TALENT_MARKET_CATEGORIES } from './marketTaxonomy'
+import { MarketSearchInput, PluginIcon, StoreSection } from './shared'
 import SkillsBlock, { isMarketInstalledSkill, InstalledSkillsList } from './SkillsBlock'
 
-/** 人才市场一次渲染的行数；「加载更多」逐批放出（全部预设约 780 个）。 */
-const TALENT_PAGE_SIZE = 40
+/** 人设市场每个分区一次渲染的行数；「加载更多」逐批放出。 */
+const TALENT_PAGE_SIZE = 10
+
+/** 数据市场每个分区一次渲染的行数；「加载更多」逐批放出。 */
+const DATA_PAGE_SIZE = 10
+
+/** 数据市场关键词都没命中时的兜底分区 key。 */
+const DATA_MORE_KEY = 'more'
+
+/** 人设市场关键词都没命中时的兜底分区 key。 */
+const TALENT_MORE_KEY = 'more'
 
 /**
- * 扩展页 = 两类技能源：公司源（网关目录展开的技能，SkillsBlock 公司分区）与
- * 外部源（SkillHub）。插件包本身不再作为卡片展示——包只是网关侧的发布容器，
- * 其技能以公司源技能呈现；已安装的包在管理视图（齿轮）中统一卸载。
+ * 扩展页 = 三类市场：能力市场（公司/外部技能源 + 企业 MCP 服务）、数据市场
+ * （可插拔的知识库，来自网关共享库目录）、人设市场（预设智能体）。
  */
-type MarketTab = 'plugins' | 'talent'
+type MarketTab = 'plugins' | 'data' | 'talent'
+
+/** 能力市场二级分类：skill 技能货架 / mcp 企业 MCP 服务。 */
+type PluginSubTab = 'skill' | 'mcp'
+
+/** 数据市场二级分类：internal 网关企业知识库 / external 外部数据源（待接入）。 */
+type DataSubTab = 'internal' | 'external'
 
 /** Page-level navigation: the skills market or the installed-plugins manager. */
 type MarketView = { page: 'grid' } | { page: 'manage' }
@@ -104,6 +147,297 @@ const TalentCard: FC<{
           </Button>
         )}
       </div>
+    </div>
+  )
+}
+
+/** 数据市场一行：公共知识库（网关共享库目录 scope=public）+ 接入/移出按钮。 */
+const DataKbCard: FC<{
+  kb: SharedKnowledgeBase
+  subscribed: boolean
+  onToggle: (kb: SharedKnowledgeBase) => void
+}> = ({ kb, subscribed, onToggle }) => {
+  const { t } = useTranslation()
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      data-ui="market.data.card"
+      className="flex min-w-0 cursor-pointer items-center gap-3 rounded-xl px-2 py-2.5 transition-colors hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+      onClick={() => onToggle(kb)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onToggle(kb)
+        }
+      }}>
+      <span
+        aria-hidden
+        className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+        <Database className="size-5" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="min-w-0 truncate text-sm font-semibold">{kb.name}</span>
+        </div>
+        {kb.description && <div className="mt-0.5 truncate text-xs text-muted-foreground">{kb.description}</div>}
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        {subscribed ? (
+          <Badge variant="outline" className="text-[11px] font-normal text-emerald-600">
+            {t('market.data.subscribed')}
+          </Badge>
+        ) : (
+          <Button variant="secondary" size="sm" className="rounded-full" data-ui="market.data.add">
+            <Database className="size-3.5" />
+            {t('market.data.add')}
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** 企业 MCP 服务一行：名称（去 [企业] 前缀）+ 类型 + 启用状态；只读（企业下发，MCP 设置页管理）。 */
+const EnterpriseMcpCard: FC<{ server: McpServer }> = ({ server }) => {
+  const { t } = useTranslation()
+  const name = server.name.startsWith(ENTERPRISE_MCP_NAME_PREFIX)
+    ? server.name.slice(ENTERPRISE_MCP_NAME_PREFIX.length)
+    : server.name
+  return (
+    <div data-ui="market.mcp.card" className="flex min-w-0 cursor-default items-center gap-3 rounded-xl px-2 py-2.5">
+      <span
+        aria-hidden
+        className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+        <Server className="size-5" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="min-w-0 truncate text-sm font-semibold">{name}</span>
+          {server.type && (
+            <Badge variant="outline" className="shrink-0 text-[10px] font-normal">
+              {server.type}
+            </Badge>
+          )}
+        </div>
+      </div>
+      {server.isActive ? (
+        <Badge variant="outline" className="shrink-0 text-[11px] font-normal text-emerald-600">
+          {t('market.mcp.active')}
+        </Badge>
+      ) : (
+        <Badge variant="outline" className="shrink-0 text-[11px] font-normal text-muted-foreground">
+          {t('market.mcp.inactive')}
+        </Badge>
+      )}
+    </div>
+  )
+}
+
+/** 数据市场二级选项：内部数据 / 外部数据。 */
+const DataSubTabs: FC<{ value: DataSubTab; onChange: (value: DataSubTab) => void }> = ({ value, onChange }) => {
+  const { t } = useTranslation()
+  return (
+    <SegmentedControl
+      value={value}
+      onValueChange={onChange}
+      options={[
+        { value: 'internal', label: t('market.data.sub.internal') },
+        { value: 'external', label: t('market.data.sub.external') }
+      ]}
+      data-ui="market.data.sub"
+    />
+  )
+}
+
+/** 能力市场 MCP 分区：企业配置统一下发的 MCP 服务（只读货架，管理入口在设置页）。 */
+const McpMarketBlock: FC = () => {
+  const { t } = useTranslation()
+  const { mcpServers, isLoading } = useMcpServers()
+  const enterpriseMcps = useMemo(
+    () => mcpServers.filter((server) => server.name.startsWith(ENTERPRISE_MCP_NAME_PREFIX)),
+    [mcpServers]
+  )
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-20" data-ui="market.mcp.loading">
+        <Spinner text={t('common.loading')} className="text-muted-foreground" />
+      </div>
+    )
+  }
+  if (enterpriseMcps.length === 0) {
+    return (
+      <div className="flex items-center justify-center py-16" data-ui="market.mcp.empty">
+        <EmptyState
+          icon={Server}
+          title={t('market.mcp.empty.title')}
+          description={t('market.mcp.empty.description')}
+          compact
+        />
+      </div>
+    )
+  }
+  return (
+    <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2" data-ui="market.mcp.list">
+      {enterpriseMcps.map((server) => (
+        <EnterpriseMcpCard key={server.id} server={server} />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * 数据市场 = 可插拔的知识库货架。内部数据来自网关共享库目录（scope=public，
+ * 管理员在 WeKnora 维护），接入状态存本地订阅表；「添加/移出」即插拔，不改
+ * WeKnora 本体。外部数据源为预留分区。
+ */
+const DataMarketBlock: FC<{ query: string }> = ({ query }) => {
+  const { t } = useTranslation()
+  const { payload, isLoading } = useSharedKnowledgeBases()
+  const [subscribedIds, setSubscribedIds] = useState<string[]>(readSubscribedKbIds)
+  // 二级分类：内部数据（网关企业知识库）/ 外部数据（外部数据源，预留）。
+  const [dataSubTab, setDataSubTab] = useState<DataSubTab>('internal')
+  // 每个数据分区的独立展示条数（key → count）；初始 DATA_PAGE_SIZE，各自加载更多。
+  const [dataSectionVisible, setDataSectionVisible] = useState<Record<string, number>>({})
+
+  const publicKbs = useMemo(() => payload.kbs.filter((kb) => kb.scope === 'public'), [payload.kbs])
+  const filtered = useMemo(() => {
+    const k = query.trim().toLowerCase()
+    if (!k) return publicKbs
+    return publicKbs.filter(
+      (kb) => kb.name.toLowerCase().includes(k) || (kb.description ?? '').toLowerCase().includes(k)
+    )
+  }, [publicKbs, query])
+
+  const subscribedSet = useMemo(() => new Set(subscribedIds), [subscribedIds])
+
+  const toggle = useCallback((kb: SharedKnowledgeBase) => {
+    setSubscribedIds((prev) => {
+      const next = prev.includes(kb.id) ? prev.filter((id) => id !== kb.id) : [...prev, kb.id]
+      writeSubscribedKbIds(next)
+      return next
+    })
+  }, [])
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col gap-4" data-ui="market.data.loading">
+        <DataSubTabs value={dataSubTab} onChange={setDataSubTab} />
+        <div className="flex items-center justify-center py-20">
+          <Spinner text={t('common.loading')} className="text-muted-foreground" />
+        </div>
+      </div>
+    )
+  }
+
+  if (dataSubTab === 'external') {
+    return (
+      <div className="flex flex-col gap-4" data-ui="market.data.external">
+        <DataSubTabs value={dataSubTab} onChange={setDataSubTab} />
+        <div className="flex items-center justify-center py-16">
+          <EmptyState
+            icon={Globe}
+            title={t('market.data.external.empty.title')}
+            description={t('market.data.external.empty.description')}
+            compact
+          />
+        </div>
+      </div>
+    )
+  }
+
+  if (filtered.length === 0) {
+    return (
+      <div className="flex items-center justify-center py-16" data-ui="market.data.empty">
+        <EmptyState
+          icon={Database}
+          title={t('market.data.empty.title')}
+          description={t('market.data.empty.description')}
+          compact
+        />
+      </div>
+    )
+  }
+
+  // 分区呈现（对齐能力市场的 StoreSection 风格）：固定分类体系 + 关键词落位，
+  // 没命中的进「更多数据」兜底——管理员后续补库不需要改代码。
+  const searching = Boolean(query.trim())
+  const grouped = new Map<string, SharedKnowledgeBase[]>()
+  for (const kb of filtered) {
+    const category = matchMarketCategory(kb.name, kb.description, DATA_MARKET_CATEGORIES)
+    const key = category?.key ?? DATA_MORE_KEY
+    const bucket = grouped.get(key)
+    if (bucket) bucket.push(kb)
+    else grouped.set(key, [kb])
+  }
+  const orderedKeys = [
+    ...DATA_MARKET_CATEGORIES.map((category) => category.key).filter((key) => grouped.has(key)),
+    ...(grouped.has(DATA_MORE_KEY) ? [DATA_MORE_KEY] : [])
+  ]
+
+  return (
+    <div className="flex flex-col gap-6" data-ui="market.data.list">
+      <DataSubTabs value={dataSubTab} onChange={setDataSubTab} />
+      {searching && (
+        <StoreSection
+          title={t('market.data.cat.search')}
+          icon={<Search size={14} className="text-muted-foreground" />}
+          sectionKey="data-search">
+          <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
+            {filtered.map((kb) => (
+              <DataKbCard key={kb.id} kb={kb} subscribed={subscribedSet.has(kb.id)} onToggle={toggle} />
+            ))}
+          </div>
+        </StoreSection>
+      )}
+      {!searching &&
+        orderedKeys.map((key) => {
+          const items = grouped.get(key)!
+          const visibleCount = dataSectionVisible[key] ?? DATA_PAGE_SIZE
+          const taken = items.slice(0, visibleCount)
+          const remaining = items.length - taken.length
+          const icon =
+            key === 'standards' ? (
+              <Scale size={14} className="text-muted-foreground" />
+            ) : key === 'design' ? (
+              <Compass size={14} className="text-muted-foreground" />
+            ) : key === 'training' ? (
+              <GraduationCap size={14} className="text-muted-foreground" />
+            ) : key === 'resources' ? (
+              <HardDrive size={14} className="text-muted-foreground" />
+            ) : (
+              <Database size={14} className="text-muted-foreground" />
+            )
+          return (
+            <StoreSection
+              key={key}
+              title={`${t(`market.data.cat.${key}`)}（${items.length}）`}
+              icon={icon}
+              sectionKey={`data-${key}`}>
+              <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
+                {taken.map((kb) => (
+                  <DataKbCard key={kb.id} kb={kb} subscribed={subscribedSet.has(kb.id)} onToggle={toggle} />
+                ))}
+              </div>
+              {remaining > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="mt-1 self-center"
+                  onClick={() =>
+                    setDataSectionVisible((counts) => ({
+                      ...counts,
+                      [key]: (counts[key] ?? DATA_PAGE_SIZE) + DATA_PAGE_SIZE
+                    }))
+                  }
+                  data-ui="market.data.section-more">
+                  {t('market.data.loadMore', { count: remaining })}
+                </Button>
+              )}
+            </StoreSection>
+          )
+        })}
     </div>
   )
 }
@@ -248,7 +582,11 @@ const MarketPage: FC = () => {
   const [view, setView] = useState<MarketView>({ page: 'grid' })
   const [query, setQuery] = useState('')
   const [activeTab, setActiveTab] = useState<MarketTab>('plugins')
-  const [talentVisible, setTalentVisible] = useState(TALENT_PAGE_SIZE)
+  // 能力市场二级分类：Skill 技能货架 / MCP 企业服务货架。
+  const [pluginSubTab, setPluginSubTab] = useState<PluginSubTab>('skill')
+  // 每个人设分区的独立展示条数（key → count）；初始 TALENT_PAGE_SIZE，各分区
+  // 各自「加载更多」。空 = 全部用初始值。
+  const [talentSectionVisible, setTalentSectionVisible] = useState<Record<string, number>>({})
   // SkillsBlock 的公司源/外部榜单随此计数变化重新拉取（页面刷新按钮触发）。
   const [skillsRefreshKey, setSkillsRefreshKey] = useState(0)
   const { data: localSkills } = useSkillCatalog()
@@ -398,6 +736,7 @@ const MarketPage: FC = () => {
               onValueChange={setActiveTab}
               options={[
                 { value: 'plugins', label: t('market.tab.plugins') },
+                { value: 'data', label: t('market.tab.data') },
                 { value: 'talent', label: t('market.tab.talent') }
               ]}
               data-ui="market.tab"
@@ -428,7 +767,25 @@ const MarketPage: FC = () => {
               </section>
             )}
 
-            {activeTab === 'plugins' && <SkillsBlock query={query} refreshKey={skillsRefreshKey} />}
+            {activeTab === 'plugins' && (
+              <div className="flex flex-col gap-4" data-ui="market.plugins.sub-wrap">
+                <SegmentedControl
+                  value={pluginSubTab}
+                  onValueChange={setPluginSubTab}
+                  options={[
+                    { value: 'skill', label: t('market.plugins.sub.skill') },
+                    { value: 'mcp', label: t('market.plugins.sub.mcp') }
+                  ]}
+                  data-ui="market.plugins.sub"
+                />
+                {pluginSubTab === 'skill' ? (
+                  <SkillsBlock query={query} refreshKey={skillsRefreshKey} />
+                ) : (
+                  <McpMarketBlock />
+                )}
+              </div>
+            )}
+            {activeTab === 'data' && <DataMarketBlock query={query} />}
             {activeTab === 'talent' && (
               <div className="flex flex-col gap-2" data-ui="market.talent.list">
                 {talentLoading ? (
@@ -446,28 +803,76 @@ const MarketPage: FC = () => {
                   </div>
                 ) : (
                   <>
-                    <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
-                      {talentFiltered.slice(0, talentVisible).map((preset) => (
-                        <TalentCard
-                          key={preset.id}
-                          preset={preset}
-                          hired={hiredNames.has(preset.name)}
-                          hiring={hiringPresetId === preset.id}
-                          onHire={(target) => void handleHire(target)}
-                          onOpen={openTalentPreset}
-                        />
-                      ))}
-                    </div>
-                    {talentFiltered.length > talentVisible && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="mt-2 self-center"
-                        onClick={() => setTalentVisible((count) => count + TALENT_PAGE_SIZE)}
-                        data-ui="market.talent.more">
-                        {t('market.talent.loadMore', { count: talentFiltered.length - talentVisible })}
-                      </Button>
-                    )}
+                    {/* 分区呈现（对齐能力市场）：人设按关键词落入固定分区，没命中
+                        的进「更多人设」兜底。每个分区独立限量展示（talentVisible
+                        是分区初始条数），各自「加载更多」——避免某个大分区吃光全局
+                        预算导致只看到一个分区。 */}
+                    {(() => {
+                      const grouped = new Map<string, AssistantCatalogPreset[]>()
+                      for (const preset of talentFiltered) {
+                        const category = matchMarketCategory(preset.name, preset.description, TALENT_MARKET_CATEGORIES)
+                        const key = category?.key ?? TALENT_MORE_KEY
+                        const bucket = grouped.get(key)
+                        if (bucket) bucket.push(preset)
+                        else grouped.set(key, [preset])
+                      }
+                      const orderedKeys = [
+                        ...TALENT_MARKET_CATEGORIES.map((category) => category.key).filter((key) => grouped.has(key)),
+                        ...(grouped.has(TALENT_MORE_KEY) ? [TALENT_MORE_KEY] : [])
+                      ]
+                      const icons: Record<string, ReactNode> = {
+                        writing: <PenLine size={14} className="text-muted-foreground" />,
+                        business: <TrendingUp size={14} className="text-muted-foreground" />,
+                        dev: <Code2 size={14} className="text-muted-foreground" />,
+                        engineering: <Compass size={14} className="text-muted-foreground" />,
+                        analysis: <BarChart3 size={14} className="text-muted-foreground" />,
+                        translate: <Languages size={14} className="text-muted-foreground" />,
+                        education: <GraduationCap size={14} className="text-muted-foreground" />,
+                        life: <Coffee size={14} className="text-muted-foreground" />,
+                        [TALENT_MORE_KEY]: <Briefcase size={14} className="text-muted-foreground" />
+                      }
+                      return orderedKeys.map((key) => {
+                        const items = grouped.get(key)!
+                        const visibleCount = talentSectionVisible[key] ?? TALENT_PAGE_SIZE
+                        const taken = items.slice(0, visibleCount)
+                        const remaining = items.length - taken.length
+                        return (
+                          <StoreSection
+                            key={key}
+                            title={`${t(`market.talent.cat.${key}`)}（${items.length}）`}
+                            icon={icons[key]}
+                            sectionKey={`talent-${key}`}>
+                            <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2">
+                              {taken.map((preset) => (
+                                <TalentCard
+                                  key={preset.id}
+                                  preset={preset}
+                                  hired={hiredNames.has(preset.name)}
+                                  hiring={hiringPresetId === preset.id}
+                                  onHire={(target) => void handleHire(target)}
+                                  onOpen={openTalentPreset}
+                                />
+                              ))}
+                            </div>
+                            {remaining > 0 && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="mt-1 self-center"
+                                onClick={() =>
+                                  setTalentSectionVisible((counts) => ({
+                                    ...counts,
+                                    [key]: (counts[key] ?? TALENT_PAGE_SIZE) + TALENT_PAGE_SIZE
+                                  }))
+                                }
+                                data-ui="market.talent.section-more">
+                                {t('market.talent.loadMore', { count: remaining })}
+                              </Button>
+                            )}
+                          </StoreSection>
+                        )
+                      })
+                    })()}
                   </>
                 )}
               </div>

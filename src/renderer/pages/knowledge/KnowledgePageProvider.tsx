@@ -20,6 +20,7 @@ import {
 } from '@renderer/hooks/useKnowledgeBase'
 import { EVENT_NAMES, EventEmitter } from '@renderer/services/EventService'
 import { toast } from '@renderer/services/toast'
+import { readSubscribedKbIds } from '@renderer/utils/dataMarket'
 import { formatErrorMessageWithPrefix } from '@renderer/utils/error'
 import type { KnowledgeBaseListItem } from '@shared/data/api/schemas/knowledges'
 import type { Group } from '@shared/data/types/group'
@@ -125,7 +126,17 @@ export const KnowledgePageProvider = ({ children, baseId, onBaseIdChange }: Know
   const { t } = useTranslation()
   const { bases, isLoading, error: basesError } = useKnowledgeBases()
   const { payload: sharedPayload, isLoading: isSharedKbsLoading } = useSharedKnowledgeBases()
-  const sharedKbs = sharedPayload.kbs
+  // 公共库只在数据市场（扩展页）接入后出现在知识库页；部门库由网关按登录
+  // 用户过滤（X-Client-User + user_departments 映射），本地不再二次过滤。
+  const subscribedKbIds = useMemo(() => new Set(readSubscribedKbIds()), [])
+  const sharedKbs = useMemo(
+    () =>
+      sharedPayload.kbs.filter((kb) => {
+        if (kb.scope === 'public') return subscribedKbIds.has(kb.id)
+        return true
+      }),
+    [sharedPayload.kbs, subscribedKbIds]
+  )
   const chatTopicId = sharedPayload.chatTopicId
   const { groups } = useKnowledgeGroups()
   const { createGroup, isCreating: isCreatingGroup } = useCreateKnowledgeGroup()

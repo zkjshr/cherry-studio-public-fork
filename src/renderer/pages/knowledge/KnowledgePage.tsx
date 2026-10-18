@@ -1,27 +1,18 @@
 import { useTranslation } from 'react-i18next'
 
-import { KnowledgePageProvider, useKnowledgePage } from './KnowledgePageProvider'
 import SharedKnowledgeBaseDetail from './components/SharedKnowledgeBaseDetail'
+import { KnowledgePageProvider, useKnowledgePage } from './KnowledgePageProvider'
 import KnowledgePageDetailSection from './sections/KnowledgePageDetailSection'
 import KnowledgePageDialogSection from './sections/KnowledgePageDialogSection'
-import KnowledgePageEmptyStateSection from './sections/KnowledgePageEmptyStateSection'
 import KnowledgePageNavigatorSection from './sections/KnowledgePageNavigatorSection'
 import KnowledgePageShell from './sections/KnowledgePageShell'
 
 const KnowledgePageContent = () => {
   const { t } = useTranslation()
-  const { bases, filePreview, isLoading, isSharedKbsLoading, selectedBase, selectedSharedKb, sharedKbs } =
-    useKnowledgePage()
+  const { filePreview, selectedBase, selectedSharedKb } = useKnowledgePage()
 
-  // No local knowledge bases AND no shared ones (and neither list still loading —
-  // the shared-kb gateway fetch can take up to 15s, and enterprise users with zero
-  // personal bases must not land in the "create first base" screen meanwhile) → a
-  // dedicated full-screen empty page (no navigator) that guides the user to create
-  // their first base. The create dialog still mounts via KnowledgePageDialogSection below.
-  if (!isLoading && !isSharedKbsLoading && bases.length === 0 && sharedKbs.length === 0) {
-    return <KnowledgePageEmptyStateSection />
-  }
-
+  // 一个库都没有时也不再进"创建第一个知识库"引导页：直接展示两栏外壳，
+  // 侧栏分区（个人 + / 部门 / 公共）本身就是创建与浏览入口。
   return (
     <KnowledgePageShell>
       <div className={filePreview ? 'hidden' : 'contents'} hidden={Boolean(filePreview)}>

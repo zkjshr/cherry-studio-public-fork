@@ -1,10 +1,12 @@
 import { createFileRoute, redirect } from '@tanstack/react-router'
 
+import ConversationEntrySkeleton from '@renderer/pages/entrySkeleton/ConversationEntrySkeleton'
 import HomePage from '@renderer/pages/home/HomePage'
 import { parseChatRouteSearch } from '@renderer/pages/home/routeSearch'
 import { resolveChatEntryTopicId, resolveChatEntryTopicIdForAssistant } from '@renderer/utils/conversationEntry'
 
 export const Route = createFileRoute('/app/chat')({
+  pendingComponent: ConversationEntrySkeleton,
   validateSearch: (search) => parseChatRouteSearch(search),
   // Resolving before mount renders the final conversation in one pass. A sidebar
   // `?assistantId=` entry must resume that assistant, not the globally last-focused topic.
