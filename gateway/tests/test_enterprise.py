@@ -162,7 +162,8 @@ def test_upstream_connectivity_test():
 def test_settings_defaults_merge_and_validation():
     assert client.get("/admin/api/settings", headers=ADMIN).json() == {
         "public_base_url": "http://127.0.0.1:8787", "default_models": {},
-        "kb_entries": {"recent_enabled": False, "kb_ids": []}, "world_url": ""}
+        "kb_entries": {"recent_enabled": False, "kb_ids": []}, "world_url": "",
+        "base_system_prompt": "", "user_departments": {}}
     _put_ok("settings", {"public_base_url": "http://10.1.2.3:8787",
                          "default_models": {"assistant": "gw/m1"},
                          "kb_entries": {"recent_enabled": True, "kb_ids": ["101-x"]}})
@@ -221,8 +222,13 @@ def test_publish_composes_client_config():
                                    "description": "说明", "model": "gateway/gw/m1",
                                    "settings": {"temperature": 0.3}, "mcp_server_ids": ["wk"],
                                    "managed": True}]
-    assert body["mcp_servers"] == [{"name": "wk", "type": "sse", "base_url": "http://wk.test/sse",
-                                    "headers": {"X-A": "b"}, "is_active": True}]
+    assert body["mcp_servers"][1:] == [{"name": "wk", "type": "sse", "base_url": "http://wk.test/sse",
+                                        "headers": {"X-A": "b"}, "is_active": True}]
+    # 内置 WeKnora MCP 恒在首位（公共知识库，人人默认下发）
+    assert body["mcp_servers"][0] == {"name": "weknora", "type": "streamableHttp",
+                                      "base_url": "http://10.1.2.3:8787/mcp/weknora",
+                                      "headers": {}, "is_active": True}
+    assert client.delete("/admin/api/mcp-servers/weknora", headers=ADMIN).status_code == 409
     assert body["minapps"] == [{"id": "wk-web", "name": "WeKnora",
                                 "url": "http://10.1.2.3:8787/proxy/weknora/"}]
     assert body["kb_entries"] == {"recent_enabled": True, "kb_ids": ["101-x"]}

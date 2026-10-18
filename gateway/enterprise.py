@@ -8,6 +8,7 @@ usage_log（见 model_proxy）。
 import copy
 import json
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -38,9 +39,14 @@ _DEFAULT_SETTINGS = {
     "default_models": {},
     "kb_entries": {"recent_enabled": False, "kb_ids": []},
     "world_url": "",
+    "base_system_prompt": "",
+    # 账号 → 部门库名前缀（如 {"51-zhang-kj": "103"} 或 ["202","101"]）；共享库目录/检索
+    # 的部门可见性映射（knowledge._dept_prefixes_for）。未登记用户部门分区为空。
+    "user_departments": {},
 }
 _DEFAULT_MODEL_ROLES = ("assistant", "translate", "quick_model")
 _MCP_TYPES = ("sse", "streamableHttp")
+_BUILTIN_MCP_NAME = "weknora"  # 内置公共知识库 MCP：发布组合恒下发，管理行仅控 is_active，不可删
 
 
 class NotFoundError(LookupError):
@@ -318,8 +324,24 @@ def upsert_mcp_server(name: str, data: dict) -> None:
         conn.commit()
 
 
+def _builtin_weknora_mcp_entry(public_base_url: str) -> dict:
+    """内置 WeKnora MCP（公共知识库，人人默认下发）：base_url 由 public_base_url 拼出，
+    is_active 取同名管理行（可整体停用）；该行不可删除。"""
+    row = get_mcp_server(_BUILTIN_MCP_NAME)
+    return {"name": _BUILTIN_MCP_NAME, "type": "streamableHttp",
+            "base_url": f'{public_base_url.rstrip("/")}/mcp/weknora',
+            "headers": {}, "is_active": bool(row["is_active"]) if row else True}
+
+
+def get_base_system_prompt() -> str:
+    """服务端强制注入的基座系统提示词（空串 = 不注入）；仅服务端使用，不进发布组合。"""
+    return str(get_settings().get("base_system_prompt") or "")
+
+
 def delete_mcp_server(name: str) -> None:
     """删除 MCP 服务；被助手 mcp_names 引用时抛 ConflictError（与上游删除同语义）。"""
+    if name == _BUILTIN_MCP_NAME:
+        raise ConflictError("内置 WeKnora MCP 不可删除（只可停用）")
     with _lock:
         conn = _connect()
         if conn.execute("SELECT 1 FROM admin_mcp_servers WHERE name=?", (name,)).fetchone() is None:
@@ -408,7 +430,7 @@ def compose_client_config() -> dict:
         for m in up["models"] if m.get("visible", True)
     ]
 
-    mcp_names = {s["name"] for s in list_mcp_servers()}
+    mcp_names = {s["name"] for s in list_mcp_servers()} | {_BUILTIN_MCP_NAME}
     assistants: list[dict] = []
     for a in list_assistants():
         model = None
@@ -438,8 +460,10 @@ def compose_client_config() -> dict:
                        "api_key": settings.gateway_token, "models": providers_models}],
         "default_models": default_models,
         "assistants": assistants,
-        "mcp_servers": [{"name": s["name"], "type": s["type"], "base_url": s["base_url"],
-                         "headers": s["headers"], "is_active": s["is_active"]} for s in list_mcp_servers()],
+        "mcp_servers": [_builtin_weknora_mcp_entry(st["public_base_url"])]
+                        + [{"name": s["name"], "type": s["type"], "base_url": s["base_url"],
+                            "headers": s["headers"], "is_active": s["is_active"]}
+                           for s in list_mcp_servers() if s["name"] != _BUILTIN_MCP_NAME],
         "minapps": [{"id": a["id"], "name": a["name"], "url": a["url"]} for a in list_minapps()],
         "kb_entries": st["kb_entries"],
         # 小世界：仅在配置了地址时顶层透出（客户端未拿到该键即视为未部署）
@@ -712,12 +736,17 @@ def _validate_minapp(data: dict) -> dict:
 
 
 def _validate_settings(data: dict) -> dict:
-    """只接受四键（整体读写，按提供的键合并）；返回待存子集。"""
+    """只接受已登记键（整体读写，按提供的键合并）；返回待存子集。"""
     unknown = set(data) - set(_DEFAULT_SETTINGS)
     if unknown:
         raise HTTPException(status_code=400, detail=f"unknown setting keys: {', '.join(sorted(unknown))}")
     if "public_base_url" in data and not _http_url(data["public_base_url"]):
         raise HTTPException(status_code=400, detail="public_base_url must be an http(s) URL")
+    if "base_system_prompt" in data:
+        # 服务端强制注入的基座系统提示词；可空。仅存服务端，不进客户端发布组合。
+        if data["base_system_prompt"] is not None and not isinstance(data["base_system_prompt"], str):
+            raise HTTPException(status_code=400, detail="base_system_prompt must be a string")
+        data["base_system_prompt"] = data["base_system_prompt"] or ""
     if "world_url" in data:
         # 可空：空串/None 表示未部署；否则必须是 http(s) URL
         world_url = data["world_url"]
@@ -798,6 +827,136 @@ def _bearer(up: dict) -> dict:
     return {"Authorization": f"Bearer {up['api_key']}"} if up["api_key"] else {}
 
 
+# ---------- Ollama 模型管理（列表 / 后台下载） ----------
+
+_PULL_JOBS: dict[str, dict] = {}  # "{uid}:{model}" → 进度状态；同键重复拉取覆盖旧任务
+_PULL_MODEL_RE = re.compile(r"^[\w][\w./:-]*$")  # ollama 模型名：字母数字开头 + . / : - _
+
+
+def _pull_job_key(uid: str, model: str) -> str:
+    return f"{uid}:{model}"
+
+
+def _run_pull(job: dict, base_url: str, model: str) -> None:
+    """后台线程：流式读 ollama /api/pull 的 NDJSON 进度行，写回 job 字典。"""
+    try:
+        with httpx.Client(timeout=httpx.Timeout(10.0, read=600.0)) as client:
+            with client.stream("POST", f"{base_url}/api/pull",
+                               json={"name": model, "stream": True}) as resp:
+                if resp.status_code >= 400:
+                    raise RuntimeError(f"HTTP {resp.status_code}")
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    evt = json.loads(line)
+                    if evt.get("error"):
+                        raise RuntimeError(evt["error"])
+                    if evt.get("total"):
+                        job["completed"] = int(evt.get("completed") or 0)
+                        job["total"] = int(evt["total"])
+                    if evt.get("status"):
+                        job["status"] = str(evt["status"])
+        job["state"], job["status"] = "done", "success"
+    except Exception as e:  # 线程内失败落状态，不冒泡
+        job["state"], job["error"] = "error", f"{type(e).__name__}: {e}"
+
+
+@router.get("/admin/api/upstreams/{uid}/ollama/models", dependencies=[Depends(_require_admin_token)])
+async def admin_ollama_models(uid: str) -> dict:
+    """列出 ollama 上游已安装模型（GET {base}/api/tags），供前端勾选导入。"""
+    up = get_upstream(uid)
+    if up is None:
+        raise HTTPException(status_code=404, detail=f"upstream not found: {uid}")
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(f"{up['base_url']}/api/tags")
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"ollama unreachable: {e}")
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"ollama HTTP {resp.status_code}")
+    models = resp.json().get("models", [])
+    return {"models": [{"name": m.get("name", ""), "size": int(m.get("size") or 0)}
+                       for m in models if m.get("name")]}
+
+
+@router.post("/admin/api/upstreams/{uid}/ollama/pull", dependencies=[Depends(_require_admin_token)])
+def admin_ollama_pull(uid: str, body: dict) -> dict:
+    """启动后台下载；同模型进行中返回 409，完成/失败后可重发覆盖。"""
+    up = get_upstream(uid)
+    if up is None:
+        raise HTTPException(status_code=404, detail=f"upstream not found: {uid}")
+    model = str(body.get("model") or "").strip()
+    if not _PULL_MODEL_RE.match(model):
+        raise HTTPException(status_code=400, detail="invalid model name")
+    key = _pull_job_key(uid, model)
+    if _PULL_JOBS.get(key, {}).get("state") == "running":
+        raise HTTPException(status_code=409, detail=f"pull already running: {model}")
+    job = {"state": "running", "status": "starting", "completed": 0, "total": 0,
+           "error": "", "started_at": _now()}
+    _PULL_JOBS[key] = job
+    threading.Thread(target=_run_pull, args=(job, up["base_url"], model), daemon=True).start()
+    return {"started": True, "model": model}
+
+
+@router.get("/admin/api/upstreams/{uid}/ollama/pull", dependencies=[Depends(_require_admin_token)])
+def admin_ollama_pull_status(uid: str, model: str = Query(...)) -> dict:
+    job = _PULL_JOBS.get(_pull_job_key(uid, model))
+    if job is None:
+        raise HTTPException(status_code=404, detail="no pull job for this model")
+    return {"model": model, **job}
+
+
+# ---------- Ollama 模型库搜索（ollama.com，无公开 JSON API，解析搜索页/tags 页） ----------
+
+_OLLAMA_WEB = "https://ollama.com"
+_REPO_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+
+
+def _ollama_web_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=8.0, follow_redirects=True,
+                             proxy=os.environ.get("OLLAMA_WEB_PROXY") or None)
+
+
+@router.get("/admin/api/ollama/search", dependencies=[Depends(_require_admin_token)])
+async def admin_ollama_search(q: str = Query(..., min_length=1, max_length=80)) -> dict:
+    """按关键词搜索 ollama.com 模型库，返回仓库名列表（如 qwen3.5）。"""
+    try:
+        async with _ollama_web_client() as client:
+            resp = await client.get(f"{_OLLAMA_WEB}/search", params={"q": q})
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"ollama.com unreachable: {e}")
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"ollama.com HTTP {resp.status_code}")
+    seen: set[str] = set()
+    models: list[str] = []
+    for name in re.findall(r'href="/library/([a-zA-Z0-9._-]+)"', resp.text):
+        if name not in seen:
+            seen.add(name)
+            models.append(name)
+    return {"models": models[:30]}
+
+
+@router.get("/admin/api/ollama/search/tags", dependencies=[Depends(_require_admin_token)])
+async def admin_ollama_search_tags(repo: str = Query(..., min_length=1, max_length=80)) -> dict:
+    """列出模型库的版本标签（如 qwen3.5 的 4b/9b/latest…），供下载下拉选择。"""
+    if not _REPO_NAME_RE.match(repo):
+        raise HTTPException(status_code=400, detail="invalid repo name")
+    try:
+        async with _ollama_web_client() as client:
+            resp = await client.get(f"{_OLLAMA_WEB}/library/{repo}/tags")
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"ollama.com unreachable: {e}")
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"ollama.com HTTP {resp.status_code}")
+    seen: set[str] = set()
+    tags: list[str] = []
+    for tag in re.findall(rf'href="/library/{repo}:([^"?]+)"', resp.text):
+        if tag not in seen:
+            seen.add(tag)
+            tags.append(tag)
+    return {"repo": repo, "tags": tags[:80]}
+
+
 @router.get("/admin/api/settings", dependencies=[Depends(_require_admin_token)])
 def admin_get_settings() -> dict:
     return get_settings()
@@ -839,7 +998,9 @@ def admin_delete_assistant(aid: str) -> dict:
 
 @router.get("/admin/api/mcp-servers", dependencies=[Depends(_require_admin_token)])
 def admin_list_mcp_servers() -> dict:
-    return {"mcp_servers": list_mcp_servers()}
+    """管理行 + 内置 WeKnora MCP（builtin: true，只读展示；is_active 取管理行缺省 True）。"""
+    builtin = _builtin_weknora_mcp_entry(get_settings()["public_base_url"])
+    return {"mcp_servers": [{**builtin, "builtin": True}, *list_mcp_servers()]}
 
 
 @router.get("/admin/api/mcp-servers/{name}", dependencies=[Depends(_require_admin_token)])
@@ -1045,6 +1206,17 @@ _ADMIN_HTML = """<!doctype html>
     <div class="bar"><h4>模型</h4><span class="grow"></span>
       <button data-action="add-model-row">添加模型</button></div>
     <div id="up-models"></div>
+    <div class="bar"><h4>Ollama 管理（需先保存上游）</h4><span class="grow"></span>
+      <button data-action="fetch-remote-models">拉取服务器模型列表</button>
+      <button data-action="import-remote-models">导入选中</button></div>
+    <div id="up-remote-models" class="checks"><span class="muted">（ollama 上游可从服务器拉取已装模型，勾选后导入下方模型表）</span></div>
+    <div class="row">
+      <label>搜索模型库 <input id="pull-model-q" placeholder="输入关键词，如 qwen" style="min-width:150px"></label>
+      <label>模型 <select id="pull-model-repo"><option value="">（先搜索）</option></select></label>
+      <label>版本 <select id="pull-tag-select" disabled><option value="">—</option></select></label>
+      <button data-action="pull-model">开始下载</button>
+      <span class="muted mono" id="pull-status"></span>
+    </div>
     <div class="row">
       <button class="primary" data-action="save-upstream">保存上游</button>
       <span class="muted" id="up-hint"></span>
@@ -1066,6 +1238,10 @@ _ADMIN_HTML = """<!doctype html>
       <button data-action="save-world-url">保存小世界</button>
     </div>
     <p class="muted">非空时随发布透出，客户端侧栏「小世界」开放；留空即下线该入口。</p>
+    <div class="bar"><h4>基座系统提示词（服务端强制注入，客户端不可查看与修改）</h4></div>
+    <label class="block"><textarea id="set-base-prompt" rows="7"
+      placeholder="留空 = 不注入。对所有经网关 /v1 的对话（openai/ollama 上游）生效，注入到 messages 首位；用户/助手提示词排在其后。weknora 智能体上游不受影响（基座在 WeKnora 侧）。建议写明公共知识库检索工具的调用规范。"></textarea></label>
+    <div class="row"><button data-action="save-base-prompt">保存基座提示词</button></div>
   </div>
   <div class="card">
     <h2>默认模型</h2>
@@ -1292,16 +1468,21 @@ function modelOptions(selected) {
 
 // ---------- 上游与模型 ----------
 
-function modelRow(m) {
+function modelRow(m, options) {
+  const names = options || [];
   const div = document.createElement("div");
   div.className = "model-row";
-  div.innerHTML = '<input class="m-id" placeholder="模型 id">'
+  const idField = names.length
+    ? `<select class="m-id"><option value="">（选择模型）</option>${names.map((n) =>
+        `<option value="${esc(n)}"${m && m.id === n ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>`
+    : '<input class="m-id" placeholder="模型 id（服务器列表不可用时才手输）">';
+  div.innerHTML = idField
     + '<input class="m-name" placeholder="显示名（可空）">'
     + '<input class="m-agent" placeholder="agent_id（仅 weknora，可空）">'
     + '<label class="check"><input type="checkbox" class="m-visible" checked>可见</label>'
     + '<button type="button" data-action="del-row">删除行</button>';
   if (m) {
-    div.querySelector(".m-id").value = m.id || "";
+    if (!names.length) div.querySelector(".m-id").value = m.id || "";
     div.querySelector(".m-name").value = m.name || "";
     div.querySelector(".m-agent").value = m.agent_id || "";
     div.querySelector(".m-visible").checked = m.visible !== false;
@@ -1315,6 +1496,8 @@ function resetUpstreamForm() {
   $("up-name").value = ""; $("up-base-url").value = ""; $("up-api-key").value = "";
   $("up-protocol").value = "openai"; $("up-enabled").checked = true;
   $("up-models").innerHTML = "";
+  $("up-remote-models").innerHTML = '<span class="muted">（ollama 上游可从服务器拉取已装模型，勾选后导入下方模型表）</span>';
+  REMOTE_MODELS = []; REMOTE_FOR = "";
   $("up-hint").textContent = "ID 创建后不可改；api_key 仅存服务端不下发；保存为 PUT 全量覆盖。";
 }
 
@@ -1340,7 +1523,7 @@ async function loadUpstreams() {
   resetUpstreamForm();
 }
 
-function editUpstream(id) {
+async function editUpstream(id) {
   const up = UPSTREAMS.find((u) => u.id === id);
   if (!up) return show("上游不存在，请重新加载", "err");
   $("up-form-title").textContent = "编辑上游：" + up.id;
@@ -1351,9 +1534,12 @@ function editUpstream(id) {
   $("up-api-key").value = up.api_key || "";
   $("up-enabled").checked = !!up.enabled;
   $("up-models").innerHTML = "";
-  (up.models || []).forEach((m) => $("up-models").appendChild(modelRow(m)));
   $("up-hint").textContent = "正在编辑 " + up.id + "（api_key 留空保存即清除）。";
   $("upstream-form").scrollIntoView({ behavior: "smooth", block: "start" });
+  // ollama 上游顺带拉已装模型，模型行走下拉选择
+  const names = await ensureRemoteModels();
+  $("up-models").innerHTML = "";
+  (up.models || []).forEach((m) => $("up-models").appendChild(modelRow(m, names)));
 }
 
 async function saveUpstream() {
@@ -1398,6 +1584,118 @@ async function deleteUpstream(id) {
   await loadUpstreams();
 }
 
+// ---------- Ollama 模型管理 ----------
+
+let pullPolling = false;  // 只保留一个轮询循环，多次点击下载复用
+
+let REMOTE_MODELS = [];   // 当前上游从 ollama 拉到的已装模型名（模型行下拉数据源）
+let REMOTE_FOR = "";      // 缓存对应的上游 ID
+
+async function ensureRemoteModels() {
+  const uid = $("up-id").value.trim();
+  if (!uid) return [];
+  if (REMOTE_FOR === uid) return REMOTE_MODELS;
+  try {
+    const r = await api("GET", "/admin/api/upstreams/" + encodeURIComponent(uid) + "/ollama/models");
+    REMOTE_MODELS = (r.models || []).map((m) => m.name);
+    REMOTE_FOR = uid;
+  } catch (e) {
+    REMOTE_MODELS = []; REMOTE_FOR = "";
+  }
+  return REMOTE_MODELS;
+}
+
+async function addModelRow() {
+  const names = await ensureRemoteModels();
+  $("up-models").appendChild(modelRow(null, names));
+  if (!names.length) show("未能获取 ollama 模型列表（上游未保存或服务器不可达），本行退化为手动输入", "err");
+}
+
+function requireSavedUpstream() {
+  const uid = $("up-id").value.trim();
+  if (!uid) { show("请先填写上游 ID 并保存上游，再使用 Ollama 管理", "err"); return null; }
+  return uid;
+}
+
+function formModelIds() {
+  return new Set(Array.from(document.querySelectorAll("#up-models .m-id")).map((i) => i.value.trim()));
+}
+
+async function fetchRemoteModels() {
+  const uid = requireSavedUpstream();
+  if (!uid) return;
+  const r = await api("GET", "/admin/api/upstreams/" + encodeURIComponent(uid) + "/ollama/models");
+  REMOTE_MODELS = (r.models || []).map((m) => m.name);
+  REMOTE_FOR = uid;
+  const existing = formModelIds();
+  $("up-remote-models").innerHTML = (r.models || []).map((m) => {
+    const has = existing.has(m.name);
+    const gb = m.size ? "（" + (m.size / 1073741824).toFixed(1) + "GB）" : "";
+    return `<label class="check"><input type="checkbox" class="rm-item" value="${esc(m.name)}"${has ? " checked disabled" : ""}> ${esc(m.name)}${gb}${has ? " · 已在表" : ""}</label>`;
+  }).join("") || '<span class="muted">（服务器上还没有已安装模型）</span>';
+  show(`已拉取服务器模型列表（${(r.models || []).length} 个）`, "ok");
+}
+
+function importRemoteModels() {
+  const existing = formModelIds();
+  const picked = Array.from(document.querySelectorAll("#up-remote-models .rm-item:checked"))
+    .map((c) => c.value).filter((n) => !existing.has(n));
+  if (!picked.length) return show("没有可导入的模型（先拉取列表并勾选）", "err");
+  picked.forEach((name) => $("up-models").appendChild(modelRow({ id: name }, REMOTE_MODELS)));
+  show(`已导入 ${picked.length} 个模型到模型表，记得点「保存上游」`, "ok");
+}
+
+async function pollPull(uid, model) {
+  if (pullPolling) return;
+  pullPolling = true;
+  try {
+    for (;;) {
+      const st = await api("GET", "/admin/api/upstreams/" + encodeURIComponent(uid)
+        + "/ollama/pull?model=" + encodeURIComponent(model));
+      const pct = st.total ? Math.round((st.completed / st.total) * 100) : 0;
+      $("pull-status").textContent = `${model}: ${st.status || st.state}${pct ? " " + pct + "%" : ""}`;
+      if (st.state === "done") { show(`${model} 下载完成，点「拉取服务器模型列表」可导入`, "ok"); return; }
+      if (st.state === "error") { show(`${model} 下载失败：${st.error}`, "err"); return; }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  } finally { pullPolling = false; }
+}
+
+let pullSearchTimer = null;
+
+async function searchRepos() {
+  const q = $("pull-model-q").value.trim();
+  if (!q) return;
+  const r = await api("GET", "/admin/api/ollama/search?q=" + encodeURIComponent(q));
+  const models = r.models || [];
+  $("pull-model-repo").innerHTML = models.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join("")
+    || '<option value="">（无结果）</option>';
+  if (models.length) { $("pull-model-repo").value = models[0]; await loadPullTags(models[0]); }
+  else { $("pull-tag-select").disabled = true; $("pull-tag-select").innerHTML = '<option value="">—</option>'; }
+}
+
+async function loadPullTags(repo) {
+  $("pull-tag-select").disabled = true;
+  $("pull-tag-select").innerHTML = '<option value="">加载中…</option>';
+  const r = await api("GET", "/admin/api/ollama/search/tags?repo=" + encodeURIComponent(repo));
+  const tags = r.tags || [];
+  $("pull-tag-select").innerHTML = tags.map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join("")
+    || '<option value="">（无标签）</option>';
+  $("pull-tag-select").disabled = !tags.length;
+}
+
+async function pullModel() {
+  const uid = requireSavedUpstream();
+  if (!uid) return;
+  const repo = $("pull-model-repo").value;
+  if (!repo) return show("请先搜索并从下拉框选择模型", "err");
+  const tag = $("pull-tag-select").value || "latest";
+  const model = repo + ":" + tag;
+  $("pull-status").textContent = model + ": 提交中…";
+  await api("POST", "/admin/api/upstreams/" + encodeURIComponent(uid) + "/ollama/pull", { model: model });
+  await pollPull(uid, model);
+}
+
 // ---------- 默认模型 / 服务设置 ----------
 
 const DM_ROLES = [["dm-assistant", "assistant"], ["dm-translate", "translate"], ["dm-quick", "quick_model"]];
@@ -1409,6 +1707,7 @@ async function loadDefaults() {
   ]);
   UPSTREAMS = upData.upstreams || [];
   $("set-base-url").value = st.public_base_url || "";
+  $("set-base-prompt").value = st.base_system_prompt || "";
   $("set-world-url").value = st.world_url || "";
   const dm = st.default_models || {};
   for (const [sel, role] of DM_ROLES) $(sel).innerHTML = modelOptions(dm[role] || "");
@@ -1421,6 +1720,11 @@ async function saveBaseUrl() {
   }
   await api("PUT", "/admin/api/settings", { public_base_url: v });
   show("public_base_url 已保存", "ok");
+}
+
+async function saveBasePrompt() {
+  await api("PUT", "/admin/api/settings", { base_system_prompt: $("set-base-prompt").value });
+  show("基座提示词已保存（服务端即时生效，无需发布）", "ok");
 }
 
 async function saveWorldUrl() {
@@ -1559,6 +1863,14 @@ function renderMcps() {
     const hs = Object.keys(s.headers || {}).length
       ? Object.entries(s.headers).map((kv) => esc(kv[0]) + "=" + esc(kv[1])).join("、")
       : "—";
+    if (s.builtin) {
+      // 内置 WeKnora MCP：只读展示 + 启停（写同名管理行控制 is_active）
+      return `<tr><td>${name} <span class="badge">内置·公共知识库</span></td><td class="mono">${esc(s.type)}</td>
+        <td class="mono">${esc(s.base_url)}</td><td>—</td><td>${s.is_active ? "是" : "否"}</td>
+        <td class="ops">
+          <button data-action="toggle-builtin-mcp" data-name="${name}" data-active="${s.is_active ? 1 : 0}">${s.is_active ? "停用" : "启用"}</button>
+        </td></tr>`;
+    }
     return `<tr><td>${name}</td><td class="mono">${esc(s.type)}</td>
       <td class="mono">${esc(s.base_url)}</td><td>${hs}</td><td>${s.is_active ? "是" : "否"}</td>
       <td class="ops">
@@ -1567,6 +1879,14 @@ function renderMcps() {
       </td></tr>`;
   }).join("");
   $("m-tbody").innerHTML = rows || '<tr><td colspan="6" class="muted">（暂无 MCP 服务）</td></tr>';
+}
+
+async function toggleBuiltinMcp(el) {
+  const active = el.dataset.active !== "1";
+  await api("PUT", "/admin/api/mcp-servers/" + encodeURIComponent(el.dataset.name),
+    { type: "streamableHttp", base_url: "", headers: {}, is_active: active });
+  show(`内置 WeKnora MCP 已${active ? "启用" : "停用"}，发布后客户端生效`, "ok");
+  await loadMcps();
 }
 
 async function loadMcps() {
@@ -1812,13 +2132,17 @@ const ACTIONS = {
   "save-token": () => saveTokenAction(),
   "publish": (el) => run(el, publishConfig),
   "new-upstream": () => resetUpstreamForm(),
-  "add-model-row": () => $("up-models").appendChild(modelRow()),
+  "add-model-row": (el) => run(el, addModelRow),
   "del-row": (el) => el.closest(".model-row").remove(),
   "save-upstream": (el) => run(el, saveUpstream),
-  "edit-upstream": (el) => editUpstream(el.dataset.id),
+  "edit-upstream": (el) => run(el, () => editUpstream(el.dataset.id)),
   "test-upstream": (el) => run(el, () => testUpstream(el)),
   "del-upstream": (el) => { if (armedConfirm(el, "删除")) run(el, () => deleteUpstream(el.dataset.id)); },
+  "fetch-remote-models": (el) => run(el, fetchRemoteModels),
+  "import-remote-models": (el) => run(el, importRemoteModels),
+  "pull-model": (el) => run(el, pullModel),
   "save-base-url": (el) => run(el, saveBaseUrl),
+  "save-base-prompt": (el) => run(el, saveBasePrompt),
   "save-world-url": (el) => run(el, saveWorldUrl),
   "save-defaults": (el) => run(el, saveDefaults),
   "save-assistant": (el) => run(el, saveAssistant),
@@ -1828,6 +2152,7 @@ const ACTIONS = {
   "save-mcp": (el) => run(el, saveMcp),
   "edit-mcp": (el) => editMcp(el.dataset.name),
   "del-mcp": (el) => { if (armedConfirm(el, "删除")) run(el, () => deleteMcp(el.dataset.name)); },
+  "toggle-builtin-mcp": (el) => run(el, () => toggleBuiltinMcp(el)),
   "save-minapp": (el) => run(el, saveMinapp),
   "edit-minapp": (el) => editMinapp(el.dataset.id),
   "del-minapp": (el) => { if (armedConfirm(el, "删除")) run(el, () => deleteMinapp(el.dataset.id)); },
@@ -1857,6 +2182,15 @@ document.body.addEventListener("click", (ev) => {
 $("tabs").addEventListener("click", (ev) => {
   const b = ev.target.closest("button[data-tab]");
   if (b) switchTab(b.dataset.tab);
+});
+
+$("pull-model-q").addEventListener("input", () => {
+  clearTimeout(pullSearchTimer);
+  pullSearchTimer = setTimeout(() => run(null, searchRepos), 500);
+});
+$("pull-model-repo").addEventListener("change", () => {
+  const repo = $("pull-model-repo").value;
+  if (repo) run(null, () => loadPullTags(repo));
 });
 
 const storedToken = localStorage.getItem("admin_token") || "";
