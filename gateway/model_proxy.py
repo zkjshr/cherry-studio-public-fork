@@ -20,6 +20,7 @@ from gateway.auth import require_token
 from gateway.chat import extract_ollama_parts
 from gateway.enterprise import (
     delete_weknora_session,
+    get_base_system_prompt,
     get_weknora_session,
     list_upstreams,
     record_usage,
@@ -178,20 +179,72 @@ def _flatten_text_content(messages):
     return out
 
 
+def _openai_tool_calls(ollama_tool_calls) -> list[dict]:
+    """ollama message.tool_calls（arguments 为对象）→ OpenAI tool_calls（arguments 为 JSON 串）。"""
+    out = []
+    for i, t in enumerate(ollama_tool_calls or []):
+        fn = t.get("function") or {}
+        args = fn.get("arguments")
+        out.append({
+            "index": i,
+            "id": t.get("id") or f"call_{uuid.uuid4().hex[:8]}",
+            "type": "function",
+            "function": {"name": fn.get("name") or "",
+                         "arguments": args if isinstance(args, str)
+                         else json.dumps(args or {}, ensure_ascii=False)},
+        })
+    return out
+
+
+def _to_ollama_messages(messages: list) -> list:
+    """OpenAI messages → ollama 形状：assistant.tool_calls 的 arguments 必须是对象
+    （OpenAI 标准是 JSON 串，原样透传会被 ollama 400：Value looks like object...），
+    id/type/index 等 ollama 不认的字段一并剥掉。"""
+    out = []
+    for m in _flatten_text_content(messages):
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            tcs = []
+            for t in m["tool_calls"]:
+                fn = t.get("function") or {}
+                args = fn.get("arguments")
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except ValueError:
+                        args = {}
+                tcs.append({"function": {"name": fn.get("name") or "", "arguments": args or {}}})
+            out.append({"role": "assistant", "content": m.get("content") or "", "tool_calls": tcs})
+        else:
+            out.append(m)
+    return out
+
+
 async def _proxy_ollama(upstream: dict, model_id: str, model: str, body: dict, t0: float):
     """ollama 协议：POST {base}/api/chat（{model, messages, stream}）；NDJSON→OpenAI chunk 流
     （首块带 role，done 行抽 prompt_eval_count/eval_count 记账），非 stream 聚合为一份 completion。
-    messages 先过 `_flatten_text_content`（数组形 content → 字符串）再转发。"""
+    messages 先过 `_flatten_text_content`（数组形 content → 字符串）再转发。
+    tools 原样透传（ollama 原生支持 OpenAI 形状），返回的 tool_calls 映射回 OpenAI 格式，
+    finish_reason 相应置 tool_calls——否则客户端 Agent 拿不到结构化工具调用，对话即断。
+    max_tokens/temperature 映射到 options。"""
     headers = {"Authorization": f"Bearer {upstream['api_key']}"} if upstream["api_key"] else {}
     url = f"{upstream['base_url']}/api/chat"
     payload = {
         "model": model_id,
-        "messages": _flatten_text_content(body.get("messages") or []),
+        "messages": _to_ollama_messages(body.get("messages") or []),
         "stream": bool(body.get("stream")),
         # 显式开启思考：qwen3.5 等推理模型把过程放进 message.thinking，
         # 不开启时可能内联 <think> 进正文。不支持思考的模型会忽略该参数。
         "think": True,
     }
+    if body.get("tools"):
+        payload["tools"] = body["tools"]
+    options: dict = {}
+    if body.get("max_tokens") is not None:
+        options["num_predict"] = body["max_tokens"]
+    if body.get("temperature") is not None:
+        options["temperature"] = body["temperature"]
+    if options:
+        payload["options"] = options
     compl_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
     if payload["stream"]:
@@ -207,6 +260,7 @@ async def _proxy_ollama(upstream: dict, model_id: str, model: str, body: dict, t
             usage = None
             ok = True
             first = True
+            finish = "stop"
             try:
                 async for line in resp.aiter_lines():
                     parts = extract_ollama_parts(line)
@@ -223,6 +277,10 @@ async def _proxy_ollama(upstream: dict, model_id: str, model: str, body: dict, t
                         d = json.loads(line)
                     except ValueError:
                         continue
+                    tool_calls = _openai_tool_calls((d.get("message") or {}).get("tool_calls"))
+                    if tool_calls:
+                        finish = "tool_calls"
+                        yield _chunk(compl_id, model, {"tool_calls": tool_calls})
                     if d.get("done"):
                         usage = _ollama_counts(d)
             except httpx.HTTPError:
@@ -234,7 +292,7 @@ async def _proxy_ollama(upstream: dict, model_id: str, model: str, body: dict, t
             finally:
                 await _close_stream(client, resp)
                 _record(model, upstream["id"], t0, usage, "ok" if ok else "error")
-            yield _chunk(compl_id, model, {}, "stop", usage)
+            yield _chunk(compl_id, model, {}, finish, usage)
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(gen(), media_type="text/event-stream",
@@ -252,6 +310,15 @@ async def _proxy_ollama(upstream: dict, model_id: str, model: str, body: dict, t
         return _passthrough(resp)
     usage = _ollama_counts(d)
     _record(model, upstream["id"], t0, usage, "ok")
+    message: dict = {
+        "role": "assistant",
+        "content": (d.get("message") or {}).get("content") or "",
+        **({"reasoning_content": d["message"]["thinking"]}
+           if (d.get("message") or {}).get("thinking") else {}),
+    }
+    tool_calls = _openai_tool_calls((d.get("message") or {}).get("tool_calls"))
+    if tool_calls:
+        message["tool_calls"] = tool_calls
     return {
         "id": compl_id,
         "object": "chat.completion",
@@ -259,13 +326,8 @@ async def _proxy_ollama(upstream: dict, model_id: str, model: str, body: dict, t
         "model": model,
         "choices": [{
             "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": (d.get("message") or {}).get("content") or "",
-                **({"reasoning_content": d["message"]["thinking"]}
-                   if (d.get("message") or {}).get("thinking") else {}),
-            },
-            "finish_reason": "stop",
+            "message": message,
+            "finish_reason": "tool_calls" if tool_calls else "stop",
         }],
         "usage": usage,
     }
@@ -447,13 +509,31 @@ async def _proxy_weknora(upstream: dict, model_id: str, model: str, body: dict, 
 
 @router.post("/v1/chat/completions")
 async def chat_completions(body: dict, _token: None = Depends(require_token)):
-    """模型路由代理入口；上游不可达回 502（OpenAI 错误格式），上游 4xx/5xx 原样透传。"""
+    """模型路由代理入口；上游不可达回 502（OpenAI 错误格式），上游 4xx/5xx 原样透传。
+
+    基座系统提示词（admin_settings.base_system_prompt）在 openai/ollama 路径上强制注入
+    到 messages 首位（客户端改不了；已有相同基座时不重复加）；weknora 路径不注入——
+    其基座由 WeKnora 智能体侧的 prompt 承载，网关只发增量 query。
+    """
     model = str(body.get("model") or "")
     upstream, model_id, miss = _resolve(model)
     t0 = time.monotonic()
     if miss is not None:
         _record(model, None, t0, None, "error")
         return miss
+    if upstream["protocol"] in ("openai", "ollama"):
+        base_prompt = get_base_system_prompt()
+        msgs = body.get("messages")
+        if base_prompt and isinstance(msgs, list):
+            # 部分模型（如 qwen3.5）的 chat 模板要求 system 必须在首位且只能有一条：
+            # 首条已是 system 时合并进它，而不是再插一条。
+            if msgs and msgs[0].get("role") == "system":
+                if msgs[0].get("content") != base_prompt:
+                    first = dict(msgs[0])
+                    first["content"] = base_prompt + "\n\n" + str(first.get("content") or "")
+                    body = {**body, "messages": [first, *msgs[1:]]}
+            elif not any(m.get("role") == "system" for m in msgs):
+                body = {**body, "messages": [{"role": "system", "content": base_prompt}, *msgs]}
     try:
         if upstream["protocol"] == "ollama":
             return await _proxy_ollama(upstream, model_id, model, body, t0)
