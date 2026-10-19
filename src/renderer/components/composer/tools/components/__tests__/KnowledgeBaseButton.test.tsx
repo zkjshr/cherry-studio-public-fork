@@ -10,6 +10,7 @@ import { KnowledgeBaseToolRuntime } from '../KnowledgeBaseButton'
 
 const mocks = vi.hoisted(() => ({
   knowledgeBases: [] as KnowledgeBase[],
+  gatewayKnowledgeBases: [] as KnowledgeBase[],
   language: 'en',
   knowledgeQueryOptions: vi.fn(),
   translationSuffix: '',
@@ -29,6 +30,13 @@ vi.mock('@renderer/hooks/useKnowledgeBase', () => ({
   useKnowledgeBases: (options?: { enabled?: boolean }) => {
     mocks.knowledgeQueryOptions(options)
     return { bases: mocks.knowledgeBases, isLoading: false }
+  }
+}))
+
+vi.mock('@renderer/components/composer/variants/shared/useGatewayKnowledgeBases', () => ({
+  useGatewayKnowledgeBases: (options?: { enabled?: boolean }) => {
+    mocks.knowledgeQueryOptions(options)
+    return { bases: mocks.gatewayKnowledgeBases, isLoading: false }
   }
 }))
 
@@ -89,6 +97,7 @@ describe('KnowledgeBaseToolRuntime', () => {
       createKnowledgeBase({ id: 'kb-1', name: 'Knowledge One', itemCount: 2 }),
       createKnowledgeBase({ id: 'kb-2', name: 'Knowledge Two', itemCount: 5 })
     ]
+    mocks.gatewayKnowledgeBases = []
   })
 
   it('opens a multi-select knowledge panel instead of toggling all configured bases', async () => {
@@ -251,6 +260,66 @@ describe('KnowledgeBaseToolRuntime', () => {
           expect.objectContaining({ id: 'knowledge-base:kb-1', label: 'Knowledge One' }),
           expect.objectContaining({ id: 'knowledge-base:kb-2', label: 'Knowledge Two' })
         ]
+      })
+    )
+  })
+
+  it('lists gateway shared knowledge bases in the panel alongside local bases', async () => {
+    mocks.gatewayKnowledgeBases = [
+      createKnowledgeBase({ id: 'ekp', name: 'ekp数据检索' }),
+      createKnowledgeBase({ id: 'weknora:abc', name: '103-科技质量部' })
+    ]
+    const launcher = createLauncherApi()
+    const onSelect = vi.fn()
+    const quickPanel = { open: vi.fn() }
+
+    render(<KnowledgeBaseToolRuntime launcher={launcher} configuredKnowledgeBaseIds={[]} onSelect={onSelect} />)
+
+    await waitFor(() => expect(launcher.registerLaunchers).toHaveBeenCalled())
+
+    const [knowledgeLauncher] = vi.mocked(launcher.registerLaunchers).mock.calls[0][0]
+    expect(knowledgeLauncher.rootSearchItems).toEqual([
+      expect.objectContaining({ id: 'knowledge-base:kb-1', label: 'Knowledge One' }),
+      expect.objectContaining({ id: 'knowledge-base:kb-2', label: 'Knowledge Two' }),
+      expect.objectContaining({ id: 'knowledge-base:ekp', label: 'ekp数据检索' }),
+      expect.objectContaining({ id: 'knowledge-base:weknora:abc', label: '103-科技质量部' })
+    ])
+
+    knowledgeLauncher.action?.({ quickPanel, source: 'root-panel', triggerInfo: { type: 'button' } } as never)
+
+    await waitFor(() =>
+      expect(quickPanel.open).toHaveBeenCalledWith(
+        expect.objectContaining({
+          list: expect.arrayContaining([
+            expect.objectContaining({ id: 'knowledge-base:ekp', label: 'ekp数据检索' }),
+            expect.objectContaining({ id: 'knowledge-base:weknora:abc', label: '103-科技质量部' })
+          ])
+        })
+      )
+    )
+  })
+
+  it('narrows gateway bases by configured knowledge-base ids like local bases', async () => {
+    mocks.gatewayKnowledgeBases = [createKnowledgeBase({ id: 'ekp', name: 'ekp数据检索' })]
+    const launcher = createLauncherApi()
+    const onSelect = vi.fn()
+    const quickPanel = { open: vi.fn() }
+
+    render(<KnowledgeBaseToolRuntime launcher={launcher} configuredKnowledgeBaseIds={['ekp']} onSelect={onSelect} />)
+
+    await waitFor(() => expect(launcher.registerLaunchers).toHaveBeenCalled())
+
+    const [knowledgeLauncher] = vi.mocked(launcher.registerLaunchers).mock.calls[0][0]
+    expect(knowledgeLauncher.rootSearchItems).toEqual([
+      expect.objectContaining({ id: 'knowledge-base:ekp', label: 'ekp数据检索' })
+    ])
+    expect(knowledgeLauncher.disabled).toBe(false)
+
+    knowledgeLauncher.action?.({ quickPanel, source: 'root-panel', triggerInfo: { type: 'button' } } as never)
+    await waitFor(() => expect(quickPanel.open).toHaveBeenCalled())
+    expect(quickPanel.open).toHaveBeenCalledWith(
+      expect.objectContaining({
+        list: [expect.objectContaining({ id: 'knowledge-base:ekp' })]
       })
     )
   })

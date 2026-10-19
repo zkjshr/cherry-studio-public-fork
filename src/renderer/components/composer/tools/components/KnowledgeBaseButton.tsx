@@ -11,6 +11,7 @@ import {
 import type { ComposerToolFooterAction } from '@renderer/components/composer/toolLauncher'
 import { KNOWLEDGE_BASE_TOOLBAR_MANIFEST } from '@renderer/components/composer/tools/toolbarManifests'
 import type { ToolLauncherApi } from '@renderer/components/composer/tools/types'
+import { useGatewayKnowledgeBases } from '@renderer/components/composer/variants/shared/useGatewayKnowledgeBases'
 import {
   type QuickPanelCallBackOptions,
   type QuickPanelInputAdapter,
@@ -53,9 +54,17 @@ const useKnowledgeBaseToolController = ({
     isQuickPanelVisible &&
     (quickPanelSymbol === ComposerPanelSymbol.Root || quickPanelSymbol === ComposerPanelSymbol.KnowledgeBase)
   const knowledgeBasesEnabled = dataRequested || panelNeedsData || (selectedBases?.length ?? 0) > 0
-  const { bases: knowledgeBases, isLoading: isKnowledgeBasesLoading } = useKnowledgeBases({
+  const { bases: localKnowledgeBases, isLoading: isKnowledgeBasesLoading } = useKnowledgeBases({
     enabled: knowledgeBasesEnabled
   })
+  // 网关共享库（含虚拟「ekp数据检索」）与本地库并列进面板——composer 作用域
+  // （useComposerKnowledgeBaseScope）已合并网关库，但本面板此前只读本地库，
+  // 导致聊天里永远选不到共享库。SWR 同 key 与 composer 侧去重，不重复请求。
+  const { bases: gatewayKnowledgeBases } = useGatewayKnowledgeBases({ enabled: knowledgeBasesEnabled })
+  const knowledgeBases = useMemo(
+    () => [...localKnowledgeBases, ...(gatewayKnowledgeBases ?? [])],
+    [localKnowledgeBases, gatewayKnowledgeBases]
+  )
   const onSelectRef = useRef(onSelect)
   const selectedBasesRef = useRef<KnowledgeBase[]>(selectedBases ?? [])
   const configuredBasesRef = useRef<KnowledgeBase[]>([])
@@ -113,29 +122,33 @@ const useKnowledgeBaseToolController = ({
 
   const buildKnowledgeBaseItems = useCallback((): QuickPanelListItem[] => {
     void language
-    return configuredBases.map((base) => ({
-      id: `knowledge-base:${base.id}`,
-      label: base.name,
-      description: tRef.current('library.config.knowledge.doc_count', { count: base.itemCount ?? 0 }),
-      filterText: [base.name, base.id].join(' '),
-      icon: <FileSearch />,
-      suffix: tRef.current('chat.input.knowledge_base'),
-      isSelected: selectedBaseIds.has(base.id),
-      action: ({ context, inputAdapter, item }) => {
-        const nextSelectedIds = new Set(selectedBasesRef.current.map((selectedBase) => selectedBase.id))
-        if (item.isSelected) {
-          nextSelectedIds.add(base.id)
-        } else {
-          nextSelectedIds.delete(base.id)
-        }
-        const nextSelectedBases = configuredBasesRef.current.filter((candidate) => nextSelectedIds.has(candidate.id))
-        selectedBasesRef.current = nextSelectedBases
-        onSelectRef.current(nextSelectedBases)
-        if (context.symbol === ComposerPanelSymbol.KnowledgeBase) {
-          closeKnowledgeBasePanelOnNextInput({ context, inputAdapter })
+    return configuredBases.map((base) => {
+      // 本地基带 itemCount；网关伪库没有（共享库文档数在网关侧，本地不统计）
+      const itemCount = 'itemCount' in base ? (base.itemCount as number | undefined) : undefined
+      return {
+        id: `knowledge-base:${base.id}`,
+        label: base.name,
+        description: tRef.current('library.config.knowledge.doc_count', { count: itemCount ?? 0 }),
+        filterText: [base.name, base.id].join(' '),
+        icon: <FileSearch />,
+        suffix: tRef.current('chat.input.knowledge_base'),
+        isSelected: selectedBaseIds.has(base.id),
+        action: ({ context, inputAdapter, item }) => {
+          const nextSelectedIds = new Set(selectedBasesRef.current.map((selectedBase) => selectedBase.id))
+          if (item.isSelected) {
+            nextSelectedIds.add(base.id)
+          } else {
+            nextSelectedIds.delete(base.id)
+          }
+          const nextSelectedBases = configuredBasesRef.current.filter((candidate) => nextSelectedIds.has(candidate.id))
+          selectedBasesRef.current = nextSelectedBases
+          onSelectRef.current(nextSelectedBases)
+          if (context.symbol === ComposerPanelSymbol.KnowledgeBase) {
+            closeKnowledgeBasePanelOnNextInput({ context, inputAdapter })
+          }
         }
       }
-    }))
+    })
   }, [closeKnowledgeBasePanelOnNextInput, configuredBases, language, selectedBaseIds])
 
   const knowledgeBaseItems = useMemo(() => buildKnowledgeBaseItems(), [buildKnowledgeBaseItems])
