@@ -74,7 +74,8 @@ async def _ollama_answer_stream(messages: list[dict], client: httpx.AsyncClient)
         async with client.stream(
             "POST",
             f"{_ollama_base()}/api/chat",
-            json={"model": _ollama_model(), "stream": True, "messages": messages},
+            # think:false 必须显式带：qwen3.5 思考内容走 reasoning 字段，不关会得到空 content
+            json={"model": _ollama_model(), "stream": True, "messages": messages, "think": False},
         ) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():

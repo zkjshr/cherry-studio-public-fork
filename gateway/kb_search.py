@@ -23,7 +23,7 @@ FANOUT_CONCURRENCY = 8
 MAX_SOURCES = 8
 # 改写调用预算：改写是增益不是依赖，超时/失败一律退回原始 query
 REWRITE_TIMEOUT = 4.0
-RERANK_TIMEOUT = 5.0
+RERANK_TIMEOUT = 25.0  # CPU 批量重排 250 条×512token 需要十秒级
 
 logger = logging.getLogger(__name__)
 
