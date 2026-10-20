@@ -113,9 +113,21 @@ async def kb_chat_completions(
     model = str(body.get("model") or "tjad-knowledge")
     stream = bool(body.get("stream", False))
     query, history = _last_user_and_history(messages)
-    # 客户端目录下发的是命名空间 wire id（ekp / weknora:<uuid>），检索前剥前缀
+    # 客户端目录下发的是命名空间 wire id（ekp / weknora:<uuid>）：
+    # weknora: 前缀直接剥；虚拟库 ekp 展开为全部部门库（管理端视角）。
+    from gateway.chat import DEPT_KB_RE
     from gateway.knowledge import _strip_kb_id_prefix
-    ids = [_strip_kb_id_prefix(s) for s in kb_ids.split(",") if s]
+    raw_ids = [s for s in kb_ids.split(",") if s]
+    dept_ids: list[str] = []
+    if "ekp" in raw_ids:
+        from gateway import weknora
+        async with httpx.AsyncClient(timeout=10) as c:
+            try:
+                kbs = await weknora.list_kbs(c)
+            except httpx.HTTPError:
+                kbs = []
+        dept_ids = [k["id"] for k in kbs if DEPT_KB_RE.match(k.get("name") or "")]
+    ids = list(dict.fromkeys(dept_ids + [_strip_kb_id_prefix(s) for s in raw_ids if s != "ekp"]))
     compl_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
     if not stream:

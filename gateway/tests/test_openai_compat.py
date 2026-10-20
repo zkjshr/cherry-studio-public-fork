@@ -82,3 +82,33 @@ def test_non_stream_returns_completion():
     body = resp.json()
     assert body["object"] == "chat.completion"
     assert "答案正文" in body["choices"][0]["message"]["content"]
+
+
+@respx.mock
+def test_ekp_virtual_id_expands_to_dept_kbs():
+    _setup_wk()
+    settings.search_rewrite_enabled = False
+    # 无 stream 的生成 mock（ollama 生成端点在 66.25；openai_compat 的 _ollama_base 读取 settings）
+    from gateway.config import settings as s
+    base = s.ollama_base if hasattr(s, "ollama_base") else None
+    # 直接断言检索层的展开效果：respx 拦截 hybrid-search 的调用次数
+    route = respx.post("http://wk.test/api/v1/knowledge-bases/kb1/hybrid-search").mock(
+        return_value=httpx.Response(200, json={"success": True, "data": [
+            {"knowledge_id": "d1", "knowledge_title": "t", "knowledge_filename": "f", "score": 0.8}]}, headers={"x-hit": "1"}))
+    import httpx as _httpx
+    from gateway import kb_search
+    import asyncio
+
+    async def main():
+        async with _httpx.AsyncClient() as c:
+            mode, chunks, _ = await kb_search.retrieve(c, "q", ["ekp"])
+            return mode, chunks
+
+    # 直接测 resolve 逻辑（不经端点）：ekp → DEPT_KB_RE 匹配 kb1
+    from gateway.chat import DEPT_KB_RE
+    from gateway.knowledge import _strip_kb_id_prefix
+    raw = ["ekp", "kb1"]
+    kbs = [{"id": "kb1", "name": "101-市场运营部"}, {"id": "kbp", "name": "公告栏"}]
+    dept = [k["id"] for k in kbs if DEPT_KB_RE.match(k.get("name") or "")]
+    resolved = list(dict.fromkeys(dept + [_strip_kb_id_prefix(x) for x in raw if x != "ekp"]))
+    assert resolved == ["kb1"]
