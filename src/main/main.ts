@@ -90,6 +90,16 @@ const startApp = async () => {
   // bootstrap and IPC readiness. TODO(v2): decompose into per-service
   // ipcHandle/ipcOn inside lifecycle services.
   await registerIpc()
+
+  // 开发者自省钩子：开发构建下把服务容器挂到 globalThis，供 --inspect 调试
+  // （CDP/Node inspector 里 globalThis.__cherryDebug 直接求值任意服务）。
+  // 打包构建绝不暴露。查看：globalThis.__cherryDebug.services('AgentService')
+  if (!app.isPackaged) {
+    ;(globalThis as Record<string, unknown>).__cherryDebug = {
+      services: (name: string) => application.get(name as never),
+      application
+    }
+  }
 }
 
 // Top-level safety net: bootstrap() handles known fatal errors internally
