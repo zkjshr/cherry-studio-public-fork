@@ -113,7 +113,9 @@ async def kb_chat_completions(
     model = str(body.get("model") or "tjad-knowledge")
     stream = bool(body.get("stream", False))
     query, history = _last_user_and_history(messages)
-    ids = [s for s in kb_ids.split(",") if s]
+    # 客户端目录下发的是命名空间 wire id（ekp / weknora:<uuid>），检索前剥前缀
+    from gateway.knowledge import _strip_kb_id_prefix
+    ids = [_strip_kb_id_prefix(s) for s in kb_ids.split(",") if s]
     compl_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 
     if not stream:

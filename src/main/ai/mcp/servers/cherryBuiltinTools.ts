@@ -69,6 +69,7 @@ import { type CherryAgentContext, CherryAutonomyTools } from './cherryAutonomyTo
 import { CherryCliTools } from './cherryCliTools'
 import { type CherryDocumentContext, CherryDocumentTools } from './cherryDocumentTools'
 import { CherryKnowledgeTools } from './cherryKnowledgeTools'
+import { CherryPresetTools } from './cherryPresetTools'
 
 export type { CherryAgentContext }
 export type CherryBuiltinToolsContext = CherryAgentContext & CherryDocumentContext
@@ -224,6 +225,7 @@ export class CherryBuiltinToolsServer {
   constructor(agentContext: CherryBuiltinToolsContext) {
     const autonomy = new CherryAutonomyTools(agentContext)
     const knowledge = new CherryKnowledgeTools(agentContext)
+    const presets = new CherryPresetTools()
     const cli = new CherryCliTools()
     const documents = new CherryDocumentTools(agentContext)
     this.mcpServer = new McpServer({ name: 'cherry-tools', version: '1.0.0' }, { capabilities: { tools: {} } })
@@ -231,6 +233,7 @@ export class CherryBuiltinToolsServer {
       tools: [
         ...listCherryBuiltinTools(),
         ...knowledge.tools(),
+        ...presets.tools(),
         ...autonomy.tools(),
         ...cli.tools(),
         ...documents.tools()
@@ -249,6 +252,9 @@ export class CherryBuiltinToolsServer {
       }
       if (knowledge.handles(name)) {
         return knowledge.call(name, request.params.arguments)
+      }
+      if (presets.handles(name)) {
+        return presets.call(name, request.params.arguments)
       }
       return callCherryBuiltinTool(name, request.params.arguments, extra.signal)
     })
