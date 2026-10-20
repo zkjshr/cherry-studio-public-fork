@@ -151,9 +151,12 @@ export const kbSearchInputSchema = z.object({
   baseIds: z
     .array(z.string().trim().min(1))
     .min(1)
+    .optional()
     .describe(
       'IDs of the knowledge bases to search, picked from the result of kb_list. ' +
-        'At least one is required; pass multiple to fan out across related bases.'
+        'OPTIONAL: omit to search every knowledge base in the current scope at once ' +
+        '(recommended when no single base obviously matches — the backend fans out ' +
+        'and ranks across all of them). Pass IDs only to target specific bases.'
     )
 })
 

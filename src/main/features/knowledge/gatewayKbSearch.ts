@@ -23,6 +23,8 @@ import {
 const logger = loggerService.withContext('gatewayKbSearch')
 
 const FETCH_TIMEOUT_MS = 15_000
+/** 多库批量检索放宽到 30s：网关按库扇出（并发 8、单库 6s），22 库最坏 ~18s。 */
+const GATEWAY_SEARCH_TIMEOUT_MS = 30_000
 const PREFERENCE_SCOPE_DEFAULT = 'default'
 
 /**
@@ -86,11 +88,17 @@ export async function listGatewayKbPseudoBases(): Promise<KnowledgeBase[]> {
 }
 
 /**
- * 单个共享库检索。no_result → []（正常空结果）；unavailable / 非 2xx → 抛错，
- * 让 searchKnowledge 的"全库失败→{error}"路径与本地向量库故障同型（Task 4
- * 的调用方负责把每个 base 的失败归集到 per-base error）。
+ * 共享库检索（支持多库一次调用：网关侧扇出+跨库融合，客户端只发一个请求）。
+ * no_result → []（正常空结果）；unavailable / 非 2xx → 抛错，让 searchKnowledge
+ * 的"全库失败→{error}"路径与本地向量库故障同型。每条结果附带 baseId——
+ * chunk 所属库的目录 wire id（upstream id 加 `weknora:` 前缀回推），批量
+ * 调用时调用方无需再按 base 分组打标。
  */
-export async function gatewayKbSearch(kbId: string, query: string): Promise<KnowledgeSearchResult[]> {
+export async function gatewayKbSearchMany(
+  kbIds: readonly string[],
+  query: string
+): Promise<{ result: KnowledgeSearchResult; baseId: string }[]> {
+  if (kbIds.length === 0) return []
   const settings = loadEnterpriseSettings()
   if (settings.status !== 'enabled') throw new Error('Enterprise gateway is not enabled.')
   const resp = await net.fetch(`${settings.serverUrl}/knowledge/api/search`, {
@@ -100,8 +108,9 @@ export async function gatewayKbSearch(kbId: string, query: string): Promise<Know
       'X-Client-Token': settings.token,
       'X-Client-User': readLocalUserName()
     },
-    body: JSON.stringify({ kb_ids: [kbId], query }),
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
+    body: JSON.stringify({ kb_ids: [...kbIds], query }),
+    // 网关按库扇出（并发 8、单库 6s）；多库一次调用比单库更耗时，放宽读超时
+    signal: AbortSignal.timeout(GATEWAY_SEARCH_TIMEOUT_MS)
   })
   if (!resp.ok) {
     throw new Error(`Gateway knowledge search failed with status ${resp.status}`)
@@ -112,38 +121,49 @@ export async function gatewayKbSearch(kbId: string, query: string): Promise<Know
     return []
   }
   // chunkId 全局去重（WeKnora hybrid-search 可能跨库返回同一 chunk），名次按
-  // 去重后的顺序 1 起编。
+  // 去重后的顺序 1 起编。baseId 回推目录 wire id：upstream id 加 `weknora:`
+  // 前缀（网关目录契约保证非 uuidv4；'ekp' 展开的 chunk 同样落到具体库）。
   const seen = new Set<string>()
-  const results: KnowledgeSearchResult[] = []
+  const results: { result: KnowledgeSearchResult; baseId: string }[] = []
   let rank = 1
   for (const chunk of body.chunks) {
     if (seen.has(chunk.id)) continue
     seen.add(chunk.id)
     const itemId = deterministicItemId(chunk.kb_id, chunk.id, chunk.chunk_index)
     const content = (chunk.content || '').trim()
+    const baseId = chunk.kb_id.startsWith('weknora:') ? chunk.kb_id : `weknora:${chunk.kb_id}`
     results.push({
-      pageContent: content || `${chunk.title}（${chunk.kb_name}）`,
-      score: clampScore(chunk.score),
-      scoreKind: 'relevance',
-      rank,
-      metadata: {
+      result: {
+        pageContent: content || `${chunk.title}（${chunk.kb_name}）`,
+        score: clampScore(chunk.score),
+        scoreKind: 'relevance',
+        rank,
+        metadata: {
+          itemId,
+          itemType: 'file',
+          source: chunk.kb_name || 'ekp数据检索',
+          chunkIndex:
+            typeof chunk.chunk_index === 'number' && Number.isInteger(chunk.chunk_index) && chunk.chunk_index >= 0
+              ? chunk.chunk_index
+              : 0,
+          // WeKnora 未给 token 数；按 ~1.6 字符/token 估——metadata 契约要求非负整数
+          tokenCount: Math.max(1, Math.ceil((chunk.content || chunk.title || '').length / 1.6))
+        },
         itemId,
-        itemType: 'file',
-        source: chunk.kb_name || 'ekp数据检索',
-        chunkIndex:
-          typeof chunk.chunk_index === 'number' && Number.isInteger(chunk.chunk_index) && chunk.chunk_index >= 0
-            ? chunk.chunk_index
-            : 0,
-        // WeKnora 未给 token 数；按 ~1.6 字符/token 估——metadata 契约要求非负整数
-        tokenCount: Math.max(1, Math.ceil((chunk.content || chunk.title || '').length / 1.6))
+        chunkId: chunk.id,
+        title: chunk.title
       },
-      itemId,
-      chunkId: chunk.id,
-      title: chunk.title
+      baseId
     })
     rank += 1
   }
   return results
+}
+
+/** 单个共享库检索：多库批量的退化形式（baseId 打标退化为传入的 kbId）。 */
+export async function gatewayKbSearch(kbId: string, query: string): Promise<KnowledgeSearchResult[]> {
+  const tagged = await gatewayKbSearchMany([kbId], query)
+  return tagged.map(({ result }) => result)
 }
 
 // ---------- internals ----------

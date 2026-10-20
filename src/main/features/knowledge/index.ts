@@ -4,6 +4,7 @@ export { KnowledgeVectorStoreService } from './pipeline/vectorstore/KnowledgeVec
 export { listSharedKnowledgeBases } from './sharedKbs'
 export {
   gatewayKbSearch,
+  gatewayKbSearchMany,
   isGatewayKbId,
   listGatewayKbPseudoBases,
   parseGatewaySearchResponse,

@@ -25,8 +25,9 @@ vi.mock('@application', () => ({
   }
 }))
 
-const { gatewayKbSearchMock, listGatewayKbPseudoBasesMock } = vi.hoisted(() => ({
+const { gatewayKbSearchMock, gatewayKbSearchManyMock, listGatewayKbPseudoBasesMock } = vi.hoisted(() => ({
   gatewayKbSearchMock: vi.fn<() => Promise<unknown[]>>(),
+  gatewayKbSearchManyMock: vi.fn<() => Promise<{ result: unknown; baseId: string }[]>>(),
   // Default: no shared bases — searchKnowledge consults the catalog on every call,
   // so local-only cases must see an empty catalog without per-test setup.
   listGatewayKbPseudoBasesMock: vi.fn(async () => [] as unknown[])
@@ -34,6 +35,7 @@ const { gatewayKbSearchMock, listGatewayKbPseudoBasesMock } = vi.hoisted(() => (
 vi.mock('@main/features/knowledge', () => ({
   isGatewayKbId: vi.fn((id: string) => id === 'ekp' || id === 'kb-202'),
   gatewayKbSearch: gatewayKbSearchMock,
+  gatewayKbSearchMany: gatewayKbSearchManyMock,
   listGatewayKbPseudoBases: listGatewayKbPseudoBasesMock
 }))
 
@@ -171,49 +173,55 @@ describe('manageKnowledge add for file type', () => {
 // base, WeKnora-backed `kb-*` ids) must go to gatewayKbSearch, not the local
 // KnowledgeService — and read/manage/outline must steer to kb_search.
 describe('searchKnowledge routes gateway kb ids', () => {
-  it('routes a gateway id to gatewayKbSearch, not KnowledgeService', async () => {
-    gatewayKbSearchMock.mockResolvedValueOnce([
+  it('routes a gateway id to the batched gatewayKbSearchMany, not KnowledgeService', async () => {
+    gatewayKbSearchManyMock.mockResolvedValueOnce([
       {
-        pageContent: '正文',
-        score: 0.9,
-        scoreKind: 'relevance',
-        rank: 1,
-        chunkId: 'k1',
-        itemId: '01900000-0000-7000-8000-000000000001',
-        metadata: {
+        result: {
+          pageContent: '正文',
+          score: 0.9,
+          scoreKind: 'relevance',
+          rank: 1,
+          chunkId: 'k1',
           itemId: '01900000-0000-7000-8000-000000000001',
-          itemType: 'file',
-          source: '202-建筑一院',
-          chunkIndex: 0,
-          tokenCount: 10
+          metadata: {
+            itemId: '01900000-0000-7000-8000-000000000001',
+            itemType: 'file',
+            source: '202-建筑一院',
+            chunkIndex: 0,
+            tokenCount: 10
+          },
+          title: '通知A'
         },
-        title: '通知A'
+        baseId: 'ekp'
       }
     ])
     const output = await searchKnowledge('资质', ['ekp'], [])
-    expect(gatewayKbSearchMock).toHaveBeenCalledWith('ekp', '资质')
+    expect(gatewayKbSearchManyMock).toHaveBeenCalledWith(['ekp'], '资质')
     expect(knowledgeSearchMock).not.toHaveBeenCalled()
     expect(Array.isArray(output)).toBe(true)
     expect((output as Array<{ baseId: string }>)[0].baseId).toBe('ekp')
   })
 
-  it('mixed local+gateway ids each hit their own backend, merged and sorted by score', async () => {
-    gatewayKbSearchMock.mockResolvedValueOnce([
+  it('mixed local+gateway ids: one batched gateway call + per-base local, merged and sorted by score', async () => {
+    gatewayKbSearchManyMock.mockResolvedValueOnce([
       {
-        pageContent: 'gw',
-        score: 0.5,
-        scoreKind: 'relevance',
-        rank: 1,
-        chunkId: 'k2',
-        itemId: '01900000-0000-7000-8000-000000000002',
-        metadata: {
+        result: {
+          pageContent: 'gw',
+          score: 0.5,
+          scoreKind: 'relevance',
+          rank: 1,
+          chunkId: 'k2',
           itemId: '01900000-0000-7000-8000-000000000002',
-          itemType: 'file',
-          source: 's',
-          chunkIndex: 0,
-          tokenCount: 4
+          metadata: {
+            itemId: '01900000-0000-7000-8000-000000000002',
+            itemType: 'file',
+            source: 's',
+            chunkIndex: 0,
+            tokenCount: 4
+          },
+          title: 'T2'
         },
-        title: 'T2'
+        baseId: 'ekp'
       }
     ])
     knowledgeSearchMock.mockResolvedValueOnce([
@@ -221,12 +229,13 @@ describe('searchKnowledge routes gateway kb ids', () => {
     ])
     const output = (await searchKnowledge('q', ['base1', 'ekp'], [])) as Array<{ baseId: string; score: number }>
     expect(output).toHaveLength(2)
+    expect(gatewayKbSearchManyMock).toHaveBeenCalledTimes(1)
     expect(output[0].score).toBeGreaterThanOrEqual(output[output.length - 1].score)
     expect(output.map((r) => r.baseId)).toContain('ekp')
   })
 
   it('gateway failure alone yields { error } (all targeted bases failed)', async () => {
-    gatewayKbSearchMock.mockRejectedValueOnce(new Error('unavailable'))
+    gatewayKbSearchManyMock.mockRejectedValueOnce(new Error('unavailable'))
     const output = await searchKnowledge('q', ['ekp'], [])
     expect(output).toHaveProperty('error')
   })
@@ -237,13 +246,62 @@ describe('searchKnowledge routes gateway kb ids', () => {
     // that by making the catalog the ONLY source here via a stale-cache id the
     // static mock doesn't recognize ('kb-202' IS recognized, so use catalog-only id).
     listGatewayKbPseudoBasesMock.mockResolvedValueOnce([{ id: 'kb-777', name: 'shared' } as never])
-    gatewayKbSearchMock.mockResolvedValueOnce([])
+    gatewayKbSearchManyMock.mockResolvedValueOnce([])
     // 'kb-777' is not in the static isGatewayKbId mock — routing must come from
     // the fetched catalog membership, not isGatewayKbId alone.
     const output = await searchKnowledge('q', ['kb-777'], [])
-    expect(gatewayKbSearchMock).toHaveBeenCalledWith('kb-777', 'q')
+    expect(gatewayKbSearchManyMock).toHaveBeenCalledWith(['kb-777'], 'q')
     expect(knowledgeSearchMock).not.toHaveBeenCalled()
     expect(output).toEqual([])
+  })
+
+  it('omitted baseIds defaults to the whole restricted scope (batched gateway + local)', async () => {
+    gatewayKbSearchManyMock.mockResolvedValueOnce([
+      {
+        result: {
+          pageContent: 'gw-scope',
+          score: 0.8,
+          scoreKind: 'relevance',
+          rank: 1,
+          chunkId: 'k3',
+          itemId: '01900000-0000-7000-8000-000000000003',
+          metadata: {
+            itemId: '01900000-0000-7000-8000-000000000003',
+            itemType: 'file',
+            source: 's',
+            chunkIndex: 0,
+            tokenCount: 8
+          },
+          title: 'T3'
+        },
+        baseId: 'ekp'
+      }
+    ])
+    knowledgeSearchMock.mockResolvedValueOnce([
+      { pageContent: 'local-scope', score: 0.6, conceptId: 'c3', title: 'Doc3', metadata: { itemType: 'file' } }
+    ])
+    // allowedIds 是天花板也是默认集：省略 baseIds → 两者都进检索
+    const output = (await searchKnowledge('q', [], ['base1', 'ekp'])) as Array<{ baseId: string }>
+    expect(gatewayKbSearchManyMock).toHaveBeenCalledWith(['ekp'], 'q')
+    expect(knowledgeSearchMock).toHaveBeenCalledWith('base1', 'q')
+    expect(output).toHaveLength(2)
+  })
+
+  it('omitted baseIds + unrestricted scope falls back to local discovery + full gateway catalog', async () => {
+    listBasesForDiscoveryMock.mockReturnValueOnce({
+      items: [{ id: 'local-a' }, { id: 'local-b' }],
+      total: 2
+    })
+    // 枚举默认集与路由种子各调一次目录 —— 用持久 mock
+    listGatewayKbPseudoBasesMock.mockResolvedValue([
+      { id: 'ekp', name: 'ekp数据检索' } as never,
+      { id: 'weknora:abc', name: '103-科技质量部' } as never
+    ])
+    gatewayKbSearchManyMock.mockResolvedValueOnce([])
+    knowledgeSearchMock.mockResolvedValue([])
+    await searchKnowledge('q', [], [])
+    expect(gatewayKbSearchManyMock).toHaveBeenCalledWith(['ekp', 'weknora:abc'], 'q')
+    expect(knowledgeSearchMock).toHaveBeenCalledTimes(2)
   })
 })
 

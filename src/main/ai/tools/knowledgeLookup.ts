@@ -26,7 +26,7 @@ import * as z from 'zod'
 import { application } from '@application'
 import { loggerService } from '@logger'
 import { citeId, newCitePrefix } from '@main/ai/utils/citationIds'
-import { gatewayKbSearch, isGatewayKbId, listGatewayKbPseudoBases } from '@main/features/knowledge'
+import { gatewayKbSearchMany, isGatewayKbId, listGatewayKbPseudoBases } from '@main/features/knowledge'
 import type {
   KbGrepOutput,
   KbListInput,
@@ -80,7 +80,7 @@ Use this when:
 - The question references topics likely covered in stored documents
 - Specific factual lookup that isn't general knowledge
 
-Workflow: when a relevant base ID is already known (for example, from an attached knowledge base), call kb_search directly with that ID in baseIds. Call kb_list first only when no relevant base ID is known. You may call this multiple times with refined queries or different baseIds if the first results are insufficient. Cite: append [cite:id] immediately after each statement a result supports, using the result's exact \`id\` field.`
+Workflow: OMIT baseIds to search every knowledge base in the current scope at once (enterprise shared bases and personal bases — the backend fans out and ranks across all of them). Pass specific baseIds (from kb_list, whose descriptions tell you what each base covers) only when the question clearly belongs to one base, or to narrow a noisy result set. You may call this multiple times with refined queries if the first results are insufficient. Never assume a search is unavailable because a previous attempt failed — tool availability is judged by the CURRENT session. Cite: append [cite:id] immediately after each statement a result supports, using the result's exact \`id\` field.`
 
 export const KNOWLEDGE_LIST_DESCRIPTION = `Browse the user's knowledge bases and their structure.
 
@@ -174,18 +174,39 @@ function gatewayKbSteer(baseId: string): KnowledgeLookupError {
   }
 }
 
+/**
+ * 省略 baseIds 时的默认检索上限（本地侧）：unrestricted 场景下"全部用户库"
+ * 可能是几十个，每个都要开索引存储，逐库检索的延迟不可接受——取发现列表
+ * 前 N 个（id 稳定序），并在工具描述里告知模型指定 baseIds 可精确定点。
+ */
+const DEFAULT_SEARCH_MAX_LOCAL_BASES = 10
+
 export async function searchKnowledge(
   query: string,
   baseIds: string[],
   allowedIds: readonly string[]
 ): Promise<KnowledgeSearchResultOrError> {
-  const targetIds = allowedIds.length > 0 ? baseIds.filter((id) => allowedIds.includes(id)) : baseIds
-
-  // Warn about dropped baseIds BEFORE the empty-target early return, so the all-dropped case (the
-  // most confusing one — the model picked only out-of-scope bases) is logged rather than silent.
-  if (allowedIds.length > 0 && targetIds.length < baseIds.length) {
-    const rejected = baseIds.filter((id) => !allowedIds.includes(id))
-    logger.warn('Dropped baseIds outside the assistant scope', { rejected, allowedIds })
+  // 省略 baseIds = 检索 scope 内全部（工具 schema 已标注 OPTIONAL）。scope 即
+  // 天花板也是默认集：restricted → allowedIds 原样；unrestricted（无 scope）→
+  // 全部本地库（发现列表前 N 个）+ 全部网关目录库。
+  let targetIds: string[]
+  if (baseIds.length > 0) {
+    targetIds = allowedIds.length > 0 ? baseIds.filter((id) => allowedIds.includes(id)) : baseIds
+    // Warn about dropped baseIds BEFORE the empty-target early return, so the all-dropped case (the
+    // most confusing one — the model picked only out-of-scope bases) is logged rather than silent.
+    if (allowedIds.length > 0 && targetIds.length < baseIds.length) {
+      const rejected = baseIds.filter((id) => !allowedIds.includes(id))
+      logger.warn('Dropped baseIds outside the assistant scope', { rejected, allowedIds })
+    }
+  } else if (allowedIds.length > 0) {
+    targetIds = [...allowedIds]
+  } else {
+    const knowledgeService = application.get('KnowledgeService')
+    const localIds = knowledgeService
+      .listBasesForDiscovery({ limit: DEFAULT_SEARCH_MAX_LOCAL_BASES, scope: { kind: 'unrestricted' } })
+      .items.map((base) => base.id)
+    const gatewayIds = (await listGatewayKbPseudoBases().catch(() => [])).map((base) => base.id)
+    targetIds = [...localIds, ...gatewayIds]
   }
 
   if (targetIds.length === 0) return []
@@ -200,22 +221,54 @@ export async function searchKnowledge(
   const gatewayBaseIds = new Set((await listGatewayKbPseudoBases().catch(() => [])).map((base) => base.id))
   const routeGateway = (baseId: string) => gatewayBaseIds.has(baseId) || isGatewayKbId(baseId)
 
+  // 网关库合并为一次批量调用（网关侧扇出+跨库融合+按 chunk 打标归属库），
+  // 本地库保持逐库并行。两组各自作为一个失败单元进入 perBase 语义：
+  // 全部失败 → {error}，部分失败 → 返回成功侧。
   const knowledgeService = application.get('KnowledgeService')
-  const perBase = await Promise.all(
-    targetIds.map(async (baseId) => {
-      const isGateway = routeGateway(baseId)
+  const gatewayTargets = targetIds.filter(routeGateway)
+  const localTargets = targetIds.filter((baseId) => !routeGateway(baseId))
+
+  const runGatewayBatch = async (): Promise<{
+    ok: boolean
+    results?: { result: KnowledgeSearchResult; baseId: string }[]
+    error?: string
+  }> => {
+    if (gatewayTargets.length === 0) return { ok: true, results: [] }
+    try {
+      const results = await gatewayKbSearchMany(gatewayTargets, query)
+      return { ok: true, results }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      logger.warn('Knowledge search failed', { baseIds: gatewayTargets, query, gateway: true, error: message })
+      return { ok: false, error: message }
+    }
+  }
+
+  const [gatewayBatch, ...localPerBase] = await Promise.all([
+    runGatewayBatch(),
+    ...localTargets.map(async (baseId) => {
       try {
-        const results = isGateway ? await gatewayKbSearch(baseId, query) : await knowledgeService.search(baseId, query)
+        const results = await knowledgeService.search(baseId, query)
         // Tag each hit with the base it came from: the flatMap below loses the closure, and
         // `conceptId` alone is only unique within one base.
         return { ok: true as const, results: results.map((result) => ({ result, baseId })) }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        logger.warn('Knowledge search failed', { baseId, query, gateway: isGateway, error: message })
+        logger.warn('Knowledge search failed', { baseId, query, gateway: false, error: message })
         return { ok: false as const, error: message }
       }
     })
-  )
+  ])
+
+  const perBase: (
+    | { ok: true; results: { result: KnowledgeSearchResult; baseId: string }[] }
+    | { ok: false; error: string }
+  )[] = [
+    gatewayBatch.ok
+      ? { ok: true, results: gatewayBatch.results ?? [] }
+      : { ok: false, error: gatewayBatch.error ?? 'Gateway knowledge search failed' },
+    ...localPerBase
+  ]
 
   // Every targeted base errored → surface the failure so the model doesn't claim the KB has nothing
   // on the topic (and waste retries). A partial failure still returns whatever bases succeeded.

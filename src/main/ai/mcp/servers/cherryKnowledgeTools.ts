@@ -92,7 +92,7 @@ const KNOWLEDGE_TOOLS: Record<string, KnowledgeTool> = {
     inputSchema: kbSearchInputSchema,
     run: async (args, baseIds) => {
       const { query, baseIds: requestedIds } = kbSearchInputSchema.parse(args)
-      return knowledgeSearchModelOutput(await searchKnowledge(query, requestedIds, baseIds))
+      return knowledgeSearchModelOutput(await searchKnowledge(query, requestedIds ?? [], baseIds))
     }
   },
   // kb_read has two modes (read the document / grep it for `pattern`); readOrGrepConcept routes by `pattern`.
