@@ -70,6 +70,23 @@ async def test_rewrite_failure_falls_back():
 
 
 @pytest.mark.asyncio
+async def test_rewrite_verbose_model_output_extracts_first_line(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"message": {"content": "### 1. 通用精准型\n停车 申请 流程\n更多说明文字"}})
+    async with _make_client(handler) as client:
+        out = await kb_search.rewrite_query(client, "它怎么申请")
+    assert out == "停车 申请 流程"
+
+
+@pytest.mark.asyncio
+async def test_rewrite_garbage_falls_back():
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"message": {"content": "a" * 80}})
+    )) as client:
+        assert await kb_search.rewrite_query(client, "原始查询") == "原始查询"
+
+
+@pytest.mark.asyncio
 async def test_rewrite_disabled(monkeypatch):
     monkeypatch.setattr(settings, "search_rewrite_enabled", False)
     async with _make_client(_route) as client:

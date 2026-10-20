@@ -59,8 +59,17 @@ async def rewrite_query(client: httpx.AsyncClient, q: str) -> str:
             ),
             timeout=REWRITE_TIMEOUT,
         )
-        rewritten = str((resp.json().get("message") or {}).get("content") or "").strip().strip('"“”').strip("。")
-        return rewritten or q
+        raw = str((resp.json().get("message") or {}).get("content") or "")
+        # 4B 小模型不守"只输出一句"的指令（会输出 markdown 长文）：跳过标题/空行取
+        # 首个内容行、剥掉残留修饰；超长视为改写失败回退原 query。
+        first_line = next(
+            (ln.strip() for ln in raw.splitlines() if ln.strip() and not ln.lstrip().startswith("#")),
+            "",
+        )
+        cleaned = first_line.lstrip("*-> ` ").strip().strip('"').strip("“”").rstrip("。")
+        if not cleaned or len(cleaned) > 40:
+            return q
+        return cleaned
     except (httpx.HTTPError, asyncio.TimeoutError, ValueError, KeyError):
         logger.warning("query rewrite failed; falling back to raw query", exc_info=True)
         return q
