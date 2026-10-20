@@ -185,7 +185,7 @@ async def retrieve(
     LAST_DEBUG.clear()
     LAST_DEBUG.update({"q_in": q, "q_effective": q_effective, "kbs": len(ids), "per_kb": {}})
 
-    sem = asyncio.Semaphore(FANOUT_CONCURRENCY)
+    sem = asyncio.Semaphore(settings.fanout_concurrency)
 
     async def one(kb_id: str):
         async with sem:
