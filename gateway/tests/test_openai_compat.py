@@ -14,8 +14,10 @@ settings.gateway_token = "test-token"
 
 def _setup_wk():
     settings.weknora_base_url = "http://wk.test"
-    # 本文件测流式/降级行为；查询改写（智能管线）不在覆盖范围，关闭以保持请求面不变
+    # 本文件测流式/降级行为；智能检索管线（改写+rerank）不在覆盖范围，关闭以保持请求面不变
     settings.search_rewrite_enabled = False
+    settings.rerank_base_url = ""
+    settings.siliconflow_rerank_key = ""
     respx.get("http://wk.test/api/v1/knowledge-bases").mock(return_value=httpx.Response(200, json={
         "data": [{"id": "kb1", "name": "101-市场运营部"}]}))
     respx.post("http://wk.test/api/v1/knowledge-bases/kb1/hybrid-search").mock(

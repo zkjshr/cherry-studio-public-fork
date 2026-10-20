@@ -98,6 +98,33 @@ def _keyword_boost(q: str, chunk: dict) -> float:
     return min(1.0, hit / (len(terms) * 2))
 
 
+async def rerank_via_local(client: httpx.AsyncClient, q: str, chunks: list[dict]) -> list[dict] | None:
+    """自建重排服务（2080S bge-reranker-v2-m3，TEI/Cohere 兼容 /rerank）。不可达返回 None。"""
+    try:
+        resp = await asyncio.wait_for(
+            client.post(
+                f"{settings.rerank_base_url}/rerank",
+                json={"query": q, "texts": [(c.get("content") or c.get("title") or "")[:1500] for c in chunks]},
+            ),
+            timeout=RERANK_TIMEOUT,
+        )
+        results = resp.json().get("results") or []
+        ranked: list[dict] = []
+        for item in sorted(results, key=lambda r: r.get("relevance_score") or 0, reverse=True):
+            idx = item.get("index")
+            if not isinstance(idx, int) or not 0 <= idx < len(chunks):
+                continue
+            c = dict(chunks[idx])
+            score = item.get("relevance_score")
+            if isinstance(score, (int, float)):
+                c["score"] = max(0.0, min(1.0, score))
+            ranked.append(c)
+        return ranked or None
+    except (httpx.HTTPError, asyncio.TimeoutError, ValueError):
+        logger.warning("local rerank unreachable; trying fallback provider", exc_info=True)
+        return None
+
+
 async def rerank_chunks(client: httpx.AsyncClient, q: str, chunks: list[dict]) -> list[dict]:
     """Cohere 兼容 rerank（siliconflow bge-reranker-v2-m3）。key 未配置或调用失败
     时原样返回（调用方退回跨库轮转融合）。重排后把 relevance_score 写回 score，
@@ -175,8 +202,26 @@ async def retrieve(
 
     chunks: list[dict] = [r for _, rs in pairs for r in rs]
 
-    # 智能检索第二步：有 rerank 供应商时全局重排（分数跨库可比，取代轮转融合）；
-    # 否则退回跨库轮转融合（同分不可比，按库轮转取优）。
+    # 智能检索第二步：优先自建重排服务（2080S bge-reranker），不可用时退回
+    # siliconflow（key 门控），都没有则跨库轮转融合（同分不可比，按库轮转取优）。
+    reranked = await rerank_via_local(client, q_effective, chunks) if settings.rerank_base_url else None
+    if reranked is not None:
+        chunks = reranked
+        merged = chunks[:MAX_SOURCES]
+        sources: list[dict] = []
+        seen: set[str] = set()
+        for c in merged:
+            if c["id"] not in seen:
+                seen.add(c["id"])
+                sources.append({
+                    "id": c["id"],
+                    "kb_id": c["kb_id"],
+                    "kb_name": c.get("kb_name") or "",
+                    "title": c.get("title") or "",
+                })
+        mode = "ok" if sources else "no_result"
+        return mode, merged, sources
+
     if settings.siliconflow_rerank_key:
         chunks = await rerank_chunks(client, q_effective, chunks)
         merged = chunks[:MAX_SOURCES]
