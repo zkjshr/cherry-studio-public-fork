@@ -9,6 +9,7 @@ import copy
 import json
 import os
 import re
+import logging
 import secrets
 import sqlite3
 import threading
@@ -17,7 +18,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from html import escape as html_escape
 from urllib.parse import quote
@@ -29,6 +30,7 @@ router = APIRouter()
 # 存储路径默认 gateway/data/enterprise.sqlite3（目录运行时建）；测试用 ENTERPRISE_DB_PATH 覆盖
 _DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "enterprise.sqlite3")
 _lock = threading.Lock()
+logger = logging.getLogger(__name__)
 _conn: sqlite3.Connection | None = None
 _conn_path = ""
 
@@ -963,7 +965,11 @@ def admin_get_settings() -> dict:
 
 
 @router.put("/admin/api/settings", dependencies=[Depends(_require_admin_token)])
-def admin_put_settings(body: dict) -> dict:
+def admin_put_settings(body: dict, request: Request) -> dict:
+    # 审计：user_departments 曾被整包保存覆盖清空（2026-10-20），记录每次写入的
+    # 键与来源以便追溯；uvicorn access log 不含 body。
+    logger.warning("settings PUT keys=%s client=%s", sorted(body.keys()),
+                   request.client.host if request.client else "?")
     with _store_errors():
         save_settings(_validate_settings(body))
     return {"saved": True}
