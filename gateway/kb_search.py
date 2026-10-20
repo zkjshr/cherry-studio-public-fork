@@ -18,7 +18,7 @@ from gateway.chat import select_kb_ids
 from gateway.config import settings
 
 # 单库预算与并发上限（与 app.py 的 DEEP_PER_KB_TIMEOUT/FANOUT_CONCURRENCY 同值）
-KB_TIMEOUT = 6.0
+KB_TIMEOUT = 12.0
 FANOUT_CONCURRENCY = 8
 MAX_SOURCES = 8
 # 改写调用预算：改写是增益不是依赖，超时/失败一律退回原始 query

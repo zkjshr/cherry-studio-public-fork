@@ -10,9 +10,10 @@ class Settings:
     search_rewrite_model: str = os.environ.get("SEARCH_REWRITE_MODEL", "qwen3.5:4b")
     search_ollama_url: str = os.environ.get("SEARCH_OLLAMA_URL", "http://10.121.16.5:11434")
     search_top_k_per_kb: int = int(os.environ.get("SEARCH_TOP_K_PER_KB", "5"))
-    # 扇出并发：WeKnora hybrid-search 依赖单卡 bge-m3 向量化（串行处理），
-    # 并发 8 会打爆 embedding 导致大多数库在超时内返回空 —— 实测 3 为上限
-    fanout_concurrency: int = int(os.environ.get("FANOUT_CONCURRENCY", "3"))
+    # 扇出并发：WeKnora hybrid-search 的向量路依赖单卡 bge-m3（串行处理），
+    # 并发 ≥2 就会让 WeKnora 内部 embedding 超时 → 大面积空命中（实测并发 3
+    # 时 20 库仅 1 库命中；串行全命中）。默认 1 = 串行，全目录 ~20-40s。
+    fanout_concurrency: int = int(os.environ.get("FANOUT_CONCURRENCY", "1"))
     siliconflow_rerank_key: str = os.environ.get("SILICONFLOW_RERANK_KEY", "")
     # 自建 rerank 服务（2080S 上的 bge-reranker-v2-m3，TEI 兼容形状，无需 key）
     rerank_base_url: str = os.environ.get("RERANK_BASE_URL", "http://192.168.66.24:8088")
