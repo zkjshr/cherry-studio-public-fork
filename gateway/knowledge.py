@@ -161,4 +161,5 @@ async def client_kb_search(
                 mode = "ok"
     except (httpx.HTTPError, ValueError):
         return {"mode": "unavailable", "chunks": [], "sources": []}
-    return {"mode": mode, "chunks": chunks, "sources": sources}
+    from gateway import kb_search as _kbs
+    return {"mode": mode, "chunks": chunks, "sources": sources, "debug": dict(getattr(_kbs, "LAST_DEBUG", {}))}

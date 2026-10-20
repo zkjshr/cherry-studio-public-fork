@@ -26,6 +26,8 @@ REWRITE_TIMEOUT = 4.0
 RERANK_TIMEOUT = 25.0  # CPU 批量重排 250 条×512token 需要十秒级
 
 logger = logging.getLogger(__name__)
+# 最近一次 retrieve 的诊断（排障用，临时）
+LAST_DEBUG: dict = {}
 
 
 async def rewrite_query(client: httpx.AsyncClient, q: str) -> str:
@@ -180,6 +182,8 @@ async def retrieve(
     # 智能检索第一步：查询改写（指代消解/关键词化，best-effort）。recent 路径
     # 没有 q，跳过。
     q_effective = await rewrite_query(client, q) if q.strip() else q
+    LAST_DEBUG.clear()
+    LAST_DEBUG.update({"q_in": q, "q_effective": q_effective, "kbs": len(ids), "per_kb": {}})
 
     sem = asyncio.Semaphore(FANOUT_CONCURRENCY)
 
@@ -192,8 +196,10 @@ async def retrieve(
                 )
                 for r in rs:
                     r["kb_name"] = kb_names.get(kb_id, r.get("kb_name") or "")
+                LAST_DEBUG["per_kb"][kb_id] = len(rs)
                 return True, rs
-            except (httpx.HTTPError, asyncio.TimeoutError):
+            except (httpx.HTTPError, asyncio.TimeoutError) as exc:
+                LAST_DEBUG["per_kb"][kb_id] = f"FAIL {type(exc).__name__}"
                 return False, []
 
     pairs = await asyncio.gather(*(one(k) for k in ids))
@@ -204,7 +210,10 @@ async def retrieve(
 
     # 智能检索第二步：优先自建重排服务（2080S bge-reranker），不可用时退回
     # siliconflow（key 门控），都没有则跨库轮转融合（同分不可比，按库轮转取优）。
+    import time as _time
+    _t0 = _time.monotonic()
     reranked = await rerank_via_local(client, q_effective, chunks) if settings.rerank_base_url else None
+    LAST_DEBUG["rerank"] = {"applied": reranked is not None, "ms": int((_time.monotonic() - _t0) * 1000), "in": len(chunks)}
     if reranked is not None:
         chunks = reranked
         merged = chunks[:MAX_SOURCES]
