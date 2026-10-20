@@ -6004,5 +6004,8 @@
   "market.talent.cat.business": "运营与市场",
   "market.data.loadMore": "加载更多（还剩 {{count}} 个）",
   "knowledge.rag.download_background": "后台下载",
-  "knowledge.rag.download_background_toast": "已转入后台下载，进度可在 设置 → 文件处理 或模型区查看"
+  "knowledge.rag.download_background_toast": "已转入后台下载，进度可在 设置 → 文件处理 或模型区查看",
+  "library.config.agent.field.auto_knowledge.label": "自动装配全部知识库",
+  "library.config.agent.field.auto_knowledge.description": "检索时自动覆盖本地与共享知识库（按用户授权），无需手动勾选",
+  "library.config.agent.section.tools.auto_knowledge_active": "已自动装配全部知识库：检索自动覆盖本地与共享库（按用户授权）。此处的手动绑定仅用于缩小检索范围。"
 }

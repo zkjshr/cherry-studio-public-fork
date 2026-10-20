@@ -6004,5 +6004,8 @@
   "market.talent.cat.business": "Operations & Marketing",
   "market.data.loadMore": "Load more ({{count}} remaining)",
   "knowledge.rag.download_background": "Download in background",
-  "knowledge.rag.download_background_toast": "Download moved to background; track it in Settings → File Processing."
+  "knowledge.rag.download_background_toast": "Download moved to background; track it in Settings → File Processing.",
+  "library.config.agent.field.auto_knowledge.label": "Auto-assemble all knowledge bases",
+  "library.config.agent.field.auto_knowledge.description": "Searches cover every visible knowledge base (personal + shared, per-user authorization) — no manual picking.",
+  "library.config.agent.section.tools.auto_knowledge_active": "All knowledge bases are auto-assembled: searches cover local + shared bases (per-user authorization). Manual binding here only narrows the scope."
 }

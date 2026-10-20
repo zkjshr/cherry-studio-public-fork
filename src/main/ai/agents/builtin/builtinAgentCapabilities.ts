@@ -72,7 +72,14 @@ export function resolveAgentCapabilities(
   agent: Pick<AgentEntity, 'configuration'> | null | undefined
 ): AgentCapabilities {
   const role = agent?.configuration?.builtin_role
-  return (role && CAPABILITIES_BY_ROLE[role]) || DEFAULT_CAPABILITIES
+  const capabilities = (role && CAPABILITIES_BY_ROLE[role]) || DEFAULT_CAPABILITIES
+  // `auto_knowledge`（agent 设置里的"自动装配全部知识库"）：检索 scope 视为该用户
+  // 可见的全量库（本地全部 + 共享目录按人授权），无需绑定或勾选。授权仍按人收紧
+  // ——这是装配开关，不是越权开关。
+  if (agent?.configuration?.auto_knowledge === true) {
+    return { ...capabilities, allKnowledgeBases: true }
+  }
+  return capabilities
 }
 
 /** Resolve this session's host-tool surface; undefined means the assistant MCP servers stay unmounted. */

@@ -260,15 +260,19 @@ export async function searchKnowledge(
     })
   ])
 
+  // 只有真的有网关目标时网关批次才算一个失败单元 —— 空目标的批次是"成功返回空"，
+  // 混进 perBase 会吞掉本地全失败时的 { error } 信号（本地-only 的常见场景）。
   const perBase: (
     | { ok: true; results: { result: KnowledgeSearchResult; baseId: string }[] }
     | { ok: false; error: string }
-  )[] = [
-    gatewayBatch.ok
-      ? { ok: true, results: gatewayBatch.results ?? [] }
-      : { ok: false, error: gatewayBatch.error ?? 'Gateway knowledge search failed' },
-    ...localPerBase
-  ]
+  )[] = [...localPerBase]
+  if (gatewayTargets.length > 0) {
+    perBase.unshift(
+      gatewayBatch.ok
+        ? { ok: true, results: gatewayBatch.results ?? [] }
+        : { ok: false, error: gatewayBatch.error ?? 'Gateway knowledge search failed' }
+    )
+  }
 
   // Every targeted base errored → surface the failure so the model doesn't claim the KB has nothing
   // on the topic (and waste retries). A partial failure still returns whatever bases succeeded.

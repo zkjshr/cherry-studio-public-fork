@@ -103,6 +103,7 @@ type AgentEditFormValues = {
   envVarsText: string
   heartbeatEnabled: boolean
   heartbeatInterval: number
+  autoKnowledge: boolean
   languageMode: AgentLanguageMode
   languageCustom: string
 }
@@ -160,6 +161,7 @@ function defaultValuesForAgent(resource: AgentDetail): AgentEditFormValues {
     envVarsText: form.envVarsText,
     heartbeatEnabled: form.heartbeatEnabled,
     heartbeatInterval: form.heartbeatInterval,
+    autoKnowledge: form.autoKnowledge,
     languageMode: form.languageMode,
     languageCustom: form.languageCustom
   }
@@ -192,6 +194,7 @@ function buildAgentFormState(baseline: AgentFormState, values: AgentEditFormValu
     envVarsText: values.envVarsText,
     heartbeatEnabled: values.heartbeatEnabled,
     heartbeatInterval: values.heartbeatInterval,
+    autoKnowledge: values.autoKnowledge,
     languageMode: values.languageMode,
     languageCustom: values.languageCustom
   }
@@ -226,6 +229,7 @@ function advanceAgentFormBaseline(
     if (hasOwn(configuration, 'permission_mode')) next.permissionMode = submitted.permissionMode
     if (hasOwn(configuration, 'env_vars')) next.envVarsText = submitted.envVarsText
     if (hasOwn(configuration, 'heartbeat_enabled')) next.heartbeatEnabled = submitted.heartbeatEnabled
+    if (hasOwn(configuration, 'auto_knowledge')) next.autoKnowledge = submitted.autoKnowledge
     if (hasOwn(configuration, 'heartbeat_interval')) next.heartbeatInterval = submitted.heartbeatInterval
     if (hasOwn(configuration, 'language')) {
       next.languageMode = submitted.languageMode
@@ -246,6 +250,7 @@ function syncAgentFormState(form: UseFormReturn<AgentEditFormValues>, next: Agen
   form.setValue('disabledTools', next.disabledTools, { shouldDirty: true })
   form.setValue('permissionMode', next.permissionMode, { shouldDirty: true })
   form.setValue('heartbeatEnabled', next.heartbeatEnabled, { shouldDirty: true })
+  form.setValue('autoKnowledge', next.autoKnowledge, { shouldDirty: true })
   form.setValue('heartbeatInterval', next.heartbeatInterval, { shouldDirty: true })
   form.setValue('languageMode', next.languageMode, { shouldDirty: true })
   form.setValue('languageCustom', next.languageCustom, { shouldDirty: true })
@@ -627,7 +632,7 @@ function AgentBasicFields({
   const [heartbeatOpen, setHeartbeatOpen] = useState(false)
 
   return (
-    <div className="divide-y divide-border-subtle border-border-subtle border-b [&>*:first-child]:pt-0">
+    <div className="divide-y divide-border-subtle border-b border-border-subtle [&>*:first-child]:pt-0">
       <AgentAvatarNameField
         form={form}
         emojiPickerOpen={emojiPickerOpen}
@@ -713,6 +718,7 @@ function AgentBasicFields({
         permissionModeCards={getPermissionModeCards(agentType)}
       />
       <AgentLanguageOverrideField form={form} />
+      <AutoKnowledgeField form={form} />
       {caps.heartbeat ? (
         <div>
           <HeartbeatSettingsField
@@ -807,7 +813,7 @@ function RuntimeField({ agentType }: { agentType: AgentType }) {
     <div className={editDialogFormRowClassName}>
       <span className={editDialogFormRowLabelClassName}>{t('library.config.agent.field.runtime.label')}</span>
       <AgentRuntimeSummary value={agentType} t={t} />
-      <span className="col-start-2 text-muted-foreground text-xs">
+      <span className="col-start-2 text-xs text-muted-foreground">
         {t('library.config.agent.field.runtime.immutable_hint')}
       </span>
     </div>
@@ -847,6 +853,30 @@ function PermissionModeField({
             t={t}
           />
           <FormMessage className="col-start-2" />
+        </FormItem>
+      )}
+    />
+  )
+}
+
+function AutoKnowledgeField({ form }: { form: UseFormReturn<AgentEditFormValues> }) {
+  const { t } = useTranslation()
+
+  return (
+    <FormField
+      control={form.control}
+      name="autoKnowledge"
+      render={({ field }) => (
+        <FormItem className={editDialogFormRowClassName}>
+          <div className="flex flex-col gap-0.5">
+            <FormLabel className={editDialogFormRowLabelClassName}>
+              {t('library.config.agent.field.auto_knowledge.label')}
+            </FormLabel>
+            <span className="text-xs text-muted-foreground">
+              {t('library.config.agent.field.auto_knowledge.description')}
+            </span>
+          </div>
+          <Switch checked={field.value} onCheckedChange={field.onChange} />
         </FormItem>
       )}
     />
@@ -894,7 +924,7 @@ function AgentLanguageOverrideField({ form }: { form: UseFormReturn<AgentEditFor
                 inputLabel={t('settings.agent.language.custom_label')}
               />
             ) : null}
-            <span className="text-muted-foreground text-xs">
+            <span className="text-xs text-muted-foreground">
               {preview
                 ? t('library.config.agent.field.language.effective_value', { language: preview })
                 : t('library.config.agent.field.language.effective_follow')}
@@ -1107,7 +1137,7 @@ function AgentToolsFields({
         <div className="grid gap-5">
           <div className="grid gap-2">
             <div className="flex items-center justify-between">
-              <span className="font-medium text-muted-foreground text-xs">{t('settings.browser.title')}</span>
+              <span className="text-xs font-medium text-muted-foreground">{t('settings.browser.title')}</span>
               <Button variant="ghost" size="sm" onClick={() => openSettingsTab('/settings/browser')}>
                 {t('settings.title')}
               </Button>
@@ -1132,7 +1162,7 @@ function AgentToolsFields({
           </div>
           {builtinSections.map((section) => (
             <div key={section.category} className="grid gap-2">
-              <div className="font-medium text-muted-foreground text-xs">{section.label}</div>
+              <div className="text-xs font-medium text-muted-foreground">{section.label}</div>
               <CatalogToggleGrid
                 items={section.items}
                 enabledIds={enabledToolIds}
@@ -1145,7 +1175,13 @@ function AgentToolsFields({
         </div>
       ) : null}
       {activeToolTab === 'tools.knowledge' ? (
-        <KnowledgeBaseField form={form} portalContainer={portalContainer} />
+        form.watch('autoKnowledge') ? (
+          <div className="rounded-md border border-border-subtle bg-muted/30 px-3 py-2.5 text-xs text-muted-foreground">
+            {t('library.config.agent.section.tools.auto_knowledge_active')}
+          </div>
+        ) : (
+          <KnowledgeBaseField form={form} portalContainer={portalContainer} />
+        )
       ) : null}
       {activeToolTab === 'tools.mcp' ? (
         <McpServerCatalogGrid
@@ -1175,7 +1211,7 @@ function AgentToolsFields({
               type="button"
               variant="ghost"
               onClick={openSkillsSettingsTab}
-              className="h-full min-h-11 w-full rounded-lg border border-border-subtle border-dashed px-2.5 py-1.5 font-normal text-muted-foreground text-sm shadow-none transition-colors hover:border-border-strong hover:bg-accent/50 hover:text-foreground">
+              className="h-full min-h-11 w-full rounded-lg border border-dashed border-border-subtle px-2.5 py-1.5 text-sm font-normal text-muted-foreground shadow-none transition-colors hover:border-border-strong hover:bg-accent/50 hover:text-foreground">
               <ToolCase size={14} strokeWidth={1.7} />
               {t('agent.settings.skills.addMore')}
             </Button>

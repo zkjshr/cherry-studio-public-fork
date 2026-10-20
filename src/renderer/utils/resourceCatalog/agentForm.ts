@@ -41,6 +41,8 @@ export interface AgentFormState {
   envVarsText: string
   heartbeatEnabled: boolean
   heartbeatInterval: number
+  /** 自动装配全部知识库（configuration.auto_knowledge）：scope 视为全量可见库。 */
+  autoKnowledge: boolean
   /** Tri-state driver for `configuration.language`: inherit (undefined), off (null), custom (string). */
   languageMode: AgentLanguageMode
   /** Draft label; only meaningful when `languageMode` is custom. */
@@ -111,6 +113,7 @@ export function buildInitialAgentFormState(agent?: AgentDetail | null, skillIds:
     envVarsText: envVarsToText(cfg.env_vars),
     heartbeatEnabled: isHeartbeatEnabled(cfg),
     heartbeatInterval: clampHeartbeatIntervalMinutes(cfg.heartbeat_interval),
+    autoKnowledge: cfg.auto_knowledge === true,
     ...initialLanguageFields(cfg.language)
   }
 }
@@ -207,6 +210,10 @@ export function diffAgentUpdate(baseline: AgentFormState, next: AgentFormState):
   }
   if (baseline.envVarsText !== next.envVarsText) {
     cfgPatch.env_vars = envVarsFromText(next.envVarsText)
+    cfgDirty = true
+  }
+  if (baseline.autoKnowledge !== next.autoKnowledge) {
+    cfgPatch.auto_knowledge = next.autoKnowledge
     cfgDirty = true
   }
   if (baseline.heartbeatEnabled !== next.heartbeatEnabled) {
