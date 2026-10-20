@@ -73,8 +73,8 @@ describe('kb_search', () => {
   })
 
   it('searches directly when a relevant base id is already known', () => {
-    expect(entry.tool.description).toMatch(/base id.*already.*kb_search directly/i)
-    expect(entry.tool.description).toMatch(/kb_list.*only.*no relevant base id/i)
+    expect(entry.tool.description).toMatch(/OMIT baseIds to search every knowledge base/i)
+    expect(entry.tool.description).toMatch(/Pass specific baseIds \(from kb_list/i)
   })
 
   it('returns [] and does not search when every requested baseId is outside the assistant scope', async () => {

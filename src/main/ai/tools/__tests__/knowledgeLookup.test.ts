@@ -367,3 +367,22 @@ describe('gateway ids steer read/manage/outline to kb_search', () => {
     expect(output).toEqual({ error: steer('ekp') })
   })
 })
+
+describe('kb_search schema tolerates stringified baseIds (small-model quirk)', () => {
+  it('coerces "[]" and JSON-string arrays, routes omitted to scope', async () => {
+    gatewayKbSearchManyMock.mockResolvedValue([])
+    // "[]" 字符串 → 归一化为空数组 → 默认检索 scope
+    await searchKnowledge('q', JSON.parse('[]'), ['ekp'])
+    expect(gatewayKbSearchManyMock).toHaveBeenCalledWith(['ekp'], 'q')
+  })
+
+  it('kbSearchInputSchema coerces the stringified-array form', async () => {
+    const { kbSearchInputSchema } = await import('@shared/ai/builtinTools')
+    const parsed = kbSearchInputSchema.parse({ query: '停车 申请', baseIds: '["ekp"]' })
+    expect(parsed.baseIds).toEqual(['ekp'])
+    const empty = kbSearchInputSchema.parse({ query: '停车 申请', baseIds: '[]' })
+    expect(empty.baseIds).toEqual([])
+    const single = kbSearchInputSchema.parse({ query: '停车 申请', baseIds: 'ekp' })
+    expect(single.baseIds).toEqual(['ekp'])
+  })
+})

@@ -149,12 +149,25 @@ export const kbSearchInputSchema = z.object({
         'Examples: ✓ "TJADKnows Desktop MCP cache invalidation", ✗ "its cache".'
     ),
   baseIds: z
-    .array(z.string().trim().min(1))
-    .min(1)
-    .optional()
+    .preprocess(
+      // 小模型常把数组参数序列化成 JSON 字符串（"[\"ekp\"]" 甚至 "[]"）——归一化，
+      // 否则 schema 拒绝后模型会误判检索不可用（实测 Qwen3.5-4B）。
+      (v) => {
+        if (typeof v !== 'string') return v
+        const t = v.trim()
+        if (!t) return []
+        try {
+          const parsed: unknown = JSON.parse(t)
+          return Array.isArray(parsed) ? parsed : [t]
+        } catch {
+          return [t]
+        }
+      },
+      z.array(z.string().trim().min(1)).optional()
+    )
     .describe(
       'IDs of the knowledge bases to search, picked from the result of kb_list. ' +
-        'OPTIONAL: omit to search every knowledge base in the current scope at once ' +
+        'OPTIONAL: omit (or pass []) to search every knowledge base in the current scope at once ' +
         '(recommended when no single base obviously matches — the backend fans out ' +
         'and ranks across all of them). Pass IDs only to target specific bases.'
     )
