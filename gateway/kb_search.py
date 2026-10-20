@@ -75,6 +75,29 @@ async def rewrite_query(client: httpx.AsyncClient, q: str) -> str:
         return q
 
 
+def _query_terms(q: str) -> list[str]:
+    """中文无空格时退化为 2-gram：如何申请停车 → [如何, 何申, 申请, 停车]。"""
+    parts = [t for t in q.split() if t]
+    if len(parts) > 1:
+        return parts
+    text = q.strip()
+    if len(text) <= 2:
+        return [text] if text else []
+    return [text[i : i + 2] for i in range(len(text) - 1)]
+
+
+def _keyword_boost(q: str, chunk: dict) -> float:
+    """查询词元在 标题+正文 的重叠率（0~1）：无 rerank 时唯一的相关性再排序信号。
+    标题命中权重加倍——标题是 EKP 文档最强的主题信号。"""
+    terms = _query_terms(q)
+    if not terms:
+        return 0.0
+    title = chunk.get("title") or ""
+    body = (chunk.get("content") or "")[:500]
+    hit = sum(1 for t in terms if t in title) * 2 + sum(1 for t in terms if t in body)
+    return min(1.0, hit / (len(terms) * 2))
+
+
 async def rerank_chunks(client: httpx.AsyncClient, q: str, chunks: list[dict]) -> list[dict]:
     """Cohere 兼容 rerank（siliconflow bge-reranker-v2-m3）。key 未配置或调用失败
     时原样返回（调用方退回跨库轮转融合）。重排后把 relevance_score 写回 score，
@@ -173,15 +196,12 @@ async def retrieve(
 
     by_kb: dict[str, list[dict]] = {}
     for c in chunks:
+        c["_boost"] = _keyword_boost(q, c)
         by_kb.setdefault(c["kb_id"], []).append(c)
     for rs in by_kb.values():
-        rs.sort(key=lambda c: c.get("score") or 0, reverse=True)
+        rs.sort(key=lambda c: (c.get("_boost") or 0, c.get("score") or 0), reverse=True)
     q_terms = [t for t in q.split() if t] or [q]
-    pools = sorted(
-        by_kb.values(),
-        key=lambda rs: any(t in (rs[0].get("title") or "") for t in q_terms),
-        reverse=True,
-    )
+    pools = sorted(by_kb.values(), key=lambda rs: rs[0].get("_boost") or 0, reverse=True)
     merged: list[dict] = []
     while any(pools) and len(merged) < MAX_SOURCES:
         before = len(merged)
