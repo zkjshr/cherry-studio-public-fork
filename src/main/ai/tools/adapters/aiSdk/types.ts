@@ -20,6 +20,12 @@ export interface ToolOutputCodec extends EntityToolOutputCodec {
  */
 export interface ToolApplyScope {
   readonly assistant?: Assistant
+  /**
+   * agent 具备 allKnowledgeBases 能力（内置助手 / configuration.auto_knowledge）：
+   * kb_* 工具的 scope 视为全量可见库 —— 即便 resolved knowledgeBaseIds 为空
+   * （无绑定且未勾选），工具也必须挂载，检索时自行兜底全量。
+   */
+  readonly allKnowledgeBases?: boolean
   readonly browserEnabled?: boolean
   /** Painting model resolved once for this request; dynamic builtins derive their schema from it. */
   readonly paintingModel?: {

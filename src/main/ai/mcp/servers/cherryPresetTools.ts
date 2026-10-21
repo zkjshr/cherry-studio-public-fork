@@ -23,7 +23,8 @@ const logger = loggerService.withContext('McpServer:CherryPresetTools')
 
 export const INVOKE_PRESET_TOOL_NAME = 'invoke_preset'
 
-const FETCH_TIMEOUT_MS = 60_000
+/** gateway-rag 串行扇出 + 生成需要更长时间。 */
+const RAG_TIMEOUT_MS = 180_000
 
 const invokePresetInputSchema = z.object({
   preset_id: z.string().min(1).describe('要使用的 preset id（见工具描述中的目录）'),
@@ -65,14 +66,17 @@ async function runGatewayRag(preset: AgentPreset, task: string): Promise<string>
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${settings.token}`
+        Authorization: `Bearer ${settings.token}`,
+        // 网关按此头部把 ekp 展开收敛到「该用户可见的部门库」（否则管理端全量 ~50 库串行必超时）
+        'X-Client-User': readLocalUserName()
       },
       body: JSON.stringify({
         model: `kb-preset:${preset.id}`,
         messages: [{ role: 'user', content: task }],
         stream: false
       }),
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
+      // 串行扇出 + 生成需要更长时间（60s 不够）
+      signal: AbortSignal.timeout(RAG_TIMEOUT_MS)
     }
   )
   if (!resp.ok) {
@@ -134,5 +138,27 @@ export class CherryPresetTools {
       logger.warn('invoke_preset failed', { error: message })
       return { content: [{ type: 'text', text: `Error: ${message}` }], isError: true }
     }
+  }
+}
+
+/** 本地用户名（app.user.name 偏好）；读不到为空串（网关视为未登记）。 */
+function readLocalUserName(): string {
+  try {
+    // eslint 避免顶层动态导入扩散：惰性 require（main 进程 CJS 环境可用）
+
+    const { and, eq } = require('drizzle-orm') as typeof import('drizzle-orm')
+
+    const { preferenceTable } = require('@data/db/schemas/preference') as typeof import('@data/db/schemas/preference')
+
+    const db = require('@application').application.get('DbService').getDb()
+    const [row] = db
+      .select({ value: preferenceTable.value })
+      .from(preferenceTable)
+      .where(and(eq(preferenceTable.scope, 'default'), eq(preferenceTable.key, 'app.user.name')))
+      .limit(1)
+      .all()
+    return typeof row?.value === 'string' ? row.value : ''
+  } catch {
+    return ''
   }
 }

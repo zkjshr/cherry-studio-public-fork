@@ -58,7 +58,9 @@ export function createKbManageToolEntry(): ToolEntry {
     description: 'Add, delete, or re-index documents in a knowledge base (requires approval)',
     defer: 'never',
     tool: kbManageTool,
-    applies: (scope) => scope.hasAnyKnowledgeBase === true && (scope.knowledgeBaseIds?.length ?? 0) > 0
+    applies: (scope) =>
+      scope.hasAnyKnowledgeBase === true &&
+      (scope.allKnowledgeBases === true || (scope.knowledgeBaseIds?.length ?? 0) > 0)
   }
 }
 

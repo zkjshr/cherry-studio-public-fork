@@ -43,6 +43,7 @@ describe('CherryPresetTools', () => {
     expect(url).toContain('http://gw.test/v1/kb/chat/completions')
     expect(url).toContain('kb_ids=ekp')
     expect(init.headers).toMatchObject({ Authorization: 'Bearer tok' })
+    expect('X-Client-User' in (init.headers as Record<string, unknown>)).toBe(true)
     expect(JSON.parse(String(init.body)).messages[0].content).toBe('如何申请停车')
     expect(result.isError).toBeFalsy()
     expect(JSON.stringify(result)).toContain('停车申请流程是')

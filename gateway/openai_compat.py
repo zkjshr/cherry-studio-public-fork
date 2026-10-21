@@ -8,7 +8,7 @@ import time
 import uuid
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from gateway import kb_search
@@ -104,6 +104,7 @@ async def _run_chat(query: str, history: list[dict], kb_ids: list[str]):
 
 @router.post("/v1/kb/chat/completions")
 async def kb_chat_completions(
+    request: Request,
     body: dict,
     _token: None = Depends(require_token),
     kb_ids: str = Query(default=""),
@@ -115,9 +116,10 @@ async def kb_chat_completions(
     stream = bool(body.get("stream", False))
     query, history = _last_user_and_history(messages)
     # 客户端目录下发的是命名空间 wire id（ekp / weknora:<uuid>）：
-    # weknora: 前缀直接剥；虚拟库 ekp 展开为全部部门库（管理端视角）。
+    # weknora: 前缀直接剥；虚拟库 ekp 展开为该用户可见的部门库（带 X-Client-User
+    # 时按 user_departments 过滤——串行扇出下库数=延迟，管理端全量 50 库会超时）。
     from gateway.chat import DEPT_KB_RE
-    from gateway.knowledge import _strip_kb_id_prefix
+    from gateway.knowledge import _strip_kb_id_prefix, _visible_kb_ids
     raw_ids = [s for s in kb_ids.split(",") if s]
     dept_ids: list[str] = []
     if "ekp" in raw_ids:
@@ -127,7 +129,11 @@ async def kb_chat_completions(
                 kbs = await weknora.list_kbs(c)
             except httpx.HTTPError:
                 kbs = []
-        dept_ids = [k["id"] for k in kbs if DEPT_KB_RE.match(k.get("name") or "")]
+        user = request.headers.get("x-client-user", "") if request is not None else ""
+        if user:
+            dept_ids = _visible_kb_ids(kbs, user, include_public=False)
+        else:
+            dept_ids = [k["id"] for k in kbs if DEPT_KB_RE.match(k.get("name") or "")]
     ids = list(dict.fromkeys(dept_ids + [_strip_kb_id_prefix(s) for s in raw_ids if s != "ekp"]))
     compl_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
 

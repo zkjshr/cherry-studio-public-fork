@@ -57,6 +57,8 @@ export function createKbListToolEntry(): ToolEntry {
     // kb_read / kb_manage: a base must exist AND be in scope (bound to this assistant, or selected
     // this turn). Listing every base while none are in scope (no kb_read / kb_search to act on them)
     // is a discovery dead-end and widens the scope, so kb_list shares the siblings' gate.
-    applies: (scope) => scope.hasAnyKnowledgeBase === true && (scope.knowledgeBaseIds?.length ?? 0) > 0
+    applies: (scope) =>
+      scope.hasAnyKnowledgeBase === true &&
+      (scope.allKnowledgeBases === true || (scope.knowledgeBaseIds?.length ?? 0) > 0)
   }
 }

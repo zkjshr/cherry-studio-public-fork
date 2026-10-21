@@ -54,7 +54,9 @@ export function createKbReadToolEntry(): ToolEntry {
     description: 'Read a knowledge base document by its Concept ID, or grep within it',
     defer: 'never',
     tool: kbReadTool,
-    applies: (scope) => scope.hasAnyKnowledgeBase === true && (scope.knowledgeBaseIds?.length ?? 0) > 0
+    applies: (scope) =>
+      scope.hasAnyKnowledgeBase === true &&
+      (scope.allKnowledgeBases === true || (scope.knowledgeBaseIds?.length ?? 0) > 0)
   }
 }
 

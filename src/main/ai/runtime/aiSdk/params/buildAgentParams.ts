@@ -430,6 +430,7 @@ export async function resolveTools(
     hasPersistedOutputs,
     canOffloadToolOutputs,
     hasAnyKnowledgeBase,
+    allKnowledgeBases: (assistant?.settings as Record<string, unknown> | undefined)?.auto_knowledge === true,
     knowledgeBaseIds,
     webToolRoutes
   })

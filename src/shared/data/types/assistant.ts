@@ -76,6 +76,8 @@ export const AssistantSettingsSchema = z.object({
   enableWebSearch: z.boolean(),
   /** Offer the `generate_image` tool to the model (needs a painting model in Settings › Default Model). */
   enableGenerateImage: z.boolean(),
+  /** 自动装配全部知识库：kb_* 工具挂载不再要求手动勾选（企业受管助手用） */
+  auto_knowledge: z.boolean().optional(),
 
   /** User-defined model parameters (e.g. {"top_k": 40, "repetition_penalty": 1.1}).
    *  Discriminated union on `type` ensures `value` is type-safe:
