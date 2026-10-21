@@ -5,6 +5,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+import gateway.config as _cfg
 from gateway import knowledge as knowledge_mod
 from gateway.app import app
 
@@ -22,8 +23,8 @@ _FAKE_KBS = [
 @pytest.fixture(autouse=True)
 def _patch(monkeypatch):
     monkeypatch.setattr(knowledge_mod, "_token_matches", lambda t: t == "tok")
-    monkeypatch.setattr(knowledge_mod, "get_settings",
-                        lambda: {"user_departments": {"51-zhang-kj": "202"}})
+    import gateway.config as _cfg
+    monkeypatch.setattr(_cfg.settings, "user_departments", {"51-zhang-kj": "202"})
     async def fake_list_kbs(c):
         return _FAKE_KBS
     monkeypatch.setattr(knowledge_mod.weknora, "list_kbs", fake_list_kbs)

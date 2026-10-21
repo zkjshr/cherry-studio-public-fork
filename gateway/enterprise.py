@@ -42,9 +42,6 @@ _DEFAULT_SETTINGS = {
     "kb_entries": {"recent_enabled": False, "kb_ids": []},
     "world_url": "",
     "base_system_prompt": "",
-    # 账号 → 部门库名前缀（如 {"51-zhang-kj": "103"} 或 ["202","101"]）；共享库目录/检索
-    # 的部门可见性映射（knowledge._dept_prefixes_for）。未登记用户部门分区为空。
-    "user_departments": {},
 }
 _DEFAULT_MODEL_ROLES = ("assistant", "translate", "quick_model")
 _MCP_TYPES = ("sse", "streamableHttp")

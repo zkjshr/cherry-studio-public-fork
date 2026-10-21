@@ -163,7 +163,7 @@ def test_settings_defaults_merge_and_validation():
     assert client.get("/admin/api/settings", headers=ADMIN).json() == {
         "public_base_url": "http://127.0.0.1:8787", "default_models": {},
         "kb_entries": {"recent_enabled": False, "kb_ids": []}, "world_url": "",
-        "base_system_prompt": "", "user_departments": {}}
+        "base_system_prompt": ""}
     _put_ok("settings", {"public_base_url": "http://10.1.2.3:8787",
                          "default_models": {"assistant": "gw/m1"},
                          "kb_entries": {"recent_enabled": True, "kb_ids": ["101-x"]}})

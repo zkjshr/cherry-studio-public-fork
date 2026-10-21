@@ -1,3 +1,4 @@
+import json
 import os
 
 
@@ -6,7 +7,9 @@ class Settings:
     weknora_base_url: str = os.environ.get("WEKNORA_BASE_URL", "http://10.137.200.58:8091")
     weknora_api_key: str = os.environ.get("WEKNORA_API_KEY", "")
     # 智能检索管线：查询改写（本地 4B ollama）+ 自建重排（2080S bge-reranker ONNX）
-    search_rewrite_enabled: bool = os.environ.get("SEARCH_REWRITE_ENABLED", "1") == "1"
+    # 查询改写只对多轮指代消解有价值；/knowledge/api/search 无状态（无历史），
+    # 4B 改写在单轮关键词查询上会漂移（编造年份/语义偏移）——默认关闭。
+    search_rewrite_enabled: bool = os.environ.get("SEARCH_REWRITE_ENABLED", "0") == "1"
     search_rewrite_model: str = os.environ.get("SEARCH_REWRITE_MODEL", "qwen3.5:4b")
     search_ollama_url: str = os.environ.get("SEARCH_OLLAMA_URL", "http://10.121.16.5:11434")
     search_top_k_per_kb: int = int(os.environ.get("SEARCH_TOP_K_PER_KB", "5"))
@@ -18,6 +21,10 @@ class Settings:
     rerank_base_url: str = os.environ.get("RERANK_BASE_URL", "http://192.168.66.24:8088")
     # 对齐 WeKnora 快速问答管线的 rerank_threshold 0.3：低于阈值的相关性直接丢弃（跨主题噪声过滤）
     rerank_threshold: float = float(os.environ.get("RERANK_THRESHOLD", "0.3"))
+    # 账号 → 部门库前缀映射（共享库按人授权）。放环境变量而非 admin_settings：
+    # 该键曾被 /admin 表单整包保存覆盖清空（审计日志 e01b9afb62 之后仍复现一次），
+    # start.sh 显式导出 USER_DEPARTMENTS_JSON 管理它。
+    user_departments: dict = json.loads(os.environ.get("USER_DEPARTMENTS_JSON", "{}"))
     gateway_token: str = os.environ.get("GATEWAY_TOKEN", "")
 
 

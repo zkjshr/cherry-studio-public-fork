@@ -6,6 +6,7 @@ import httpx
 import respx
 from fastapi.testclient import TestClient
 
+import gateway.config as _cfg_module
 from gateway import enterprise
 from gateway.app import app
 from gateway.config import settings
@@ -28,11 +29,11 @@ def test_kbs_classified_by_dept_prefix():
         {"id": "2", "name": "通用设计资料", "description": ""},
         {"id": "3", "name": "021-岩一院图集"},
     ])
-    enterprise.save_settings({"user_departments": {"51-zhang-kj": ["101", "021"]}})
+    setattr(_cfg_module.settings, "user_departments", {"51-zhang-kj": ["101", "021"]})
     try:
         resp = client.get("/knowledge/api/kbs", headers={**CLIENT, "X-Client-User": "51-zhang-kj"})
     finally:
-        enterprise.save_settings({"user_departments": {}})
+        setattr(_cfg_module.settings, "user_departments", {})
     assert resp.status_code == 200
     body = resp.json()["kbs"]
     # 虚拟库 ekp 恒在目录首位；真实库按部门/公共分类在其后。
@@ -51,7 +52,7 @@ def test_kbs_dept_filtered_by_user_mapping():
         {"id": "2", "name": "101-市场运营部"},
         {"id": "3", "name": "公共制度汇编"},
     ])
-    enterprise.save_settings({"user_departments": {"51-zhang-kj": "202"}})
+    setattr(_cfg_module.settings, "user_departments", {"51-zhang-kj": "202"})
     try:
         # 登记用户：部门分区只剩本部门；公共库不受影响。
         resp = client.get("/knowledge/api/kbs", headers={**CLIENT, "X-Client-User": "51-zhang-kj"})
@@ -63,12 +64,12 @@ def test_kbs_dept_filtered_by_user_mapping():
         resp = client.get("/knowledge/api/kbs", headers={**CLIENT, "X-Client-User": "someone-else"})
         assert [kb["name"] for kb in resp.json()["kbs"] if kb["id"] != "ekp"] == ["公共制度汇编"]
         # 多部门支持（list 值）。
-        enterprise.save_settings({"user_departments": {"51-zhang-kj": ["202", "101"]}})
+        setattr(_cfg_module.settings, "user_departments", {"51-zhang-kj": ["202", "101"]})
         resp = client.get("/knowledge/api/kbs", headers={**CLIENT, "X-Client-User": "51-zhang-kj"})
         assert [kb["name"] for kb in resp.json()["kbs"] if kb["scope"] == "dept"] == [
             "202-工程技术研究院", "101-市场运营部"]
     finally:
-        enterprise.save_settings({"user_departments": {}})
+        setattr(_cfg_module.settings, "user_departments", {})
 
 
 @respx.mock

@@ -28,7 +28,8 @@ def _require_client_token(x_client_token: str = Header(default="")) -> None:
 
 def _dept_prefixes_for(user: str) -> list[str]:
     """该用户的部门库名前缀列表（如 ["202"]）；未登记用户为空。"""
-    mapping = get_settings().get("user_departments") or {}
+    from gateway.config import settings as cfg
+    mapping = cfg.user_departments or {}
     if not isinstance(mapping, dict):
         return []
     value = mapping.get(user)
