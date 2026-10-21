@@ -56,7 +56,7 @@ async def rewrite_query(client: httpx.AsyncClient, q: str) -> str:
                     ],
                     "stream": False,
                     "think": False,
-                    "options": {"temperature": 0.1, "num_predict": 60},
+                    "options": {"temperature": 0.1, "num_predict": 60, "num_ctx": 8192},
                 },
             ),
             timeout=REWRITE_TIMEOUT,
@@ -162,6 +162,13 @@ async def retrieve(
                     weknora.kb_hybrid_search(client, kb_id, q_effective, settings.search_top_k_per_kb),
                     timeout=KB_TIMEOUT,
                 )
+                if not rs:
+                    # 瞬态空结果（embedding 与生成共享 GPU 时的争用）：短退避重试一次
+                    await asyncio.sleep(1.5)
+                    rs = await asyncio.wait_for(
+                        weknora.kb_hybrid_search(client, kb_id, q_effective, settings.search_top_k_per_kb),
+                        timeout=KB_TIMEOUT,
+                    )
                 for r in rs:
                     r["kb_name"] = kb_names.get(kb_id, r.get("kb_name") or "")
                 LAST_DEBUG["per_kb"][kb_id] = len(rs)
