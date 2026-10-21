@@ -6,10 +6,13 @@
 - hybrid-search 为平铺 chunk 字段（knowledge_id/knowledge_title/score...，无嵌套 knowledge、
   无 kb_name），且忽略 limit 参数恒返 80 条——网关侧按 limit 截断
 """
+import logging
+
 import httpx
 
 from gateway.config import settings
 
+logger = logging.getLogger(__name__)
 TIMEOUT = httpx.Timeout(5.0, read=8.0)
 
 
@@ -50,11 +53,21 @@ async def recent_knowledge(client: httpx.AsyncClient, limit: int) -> list[dict]:
 
 
 async def kb_hybrid_search(client: httpx.AsyncClient, kb_id: str, q: str, limit: int) -> list[dict]:
+    logger.warning("hybrid-search kb=%s q=%r", kb_id[:8], q)
     resp = await client.post(
         f"{settings.weknora_base_url}/api/v1/knowledge-bases/{kb_id}/hybrid-search",
         json={"query_text": q},
         headers=_headers(),
     )
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = {}
+    try:
+        data = payload.get("data") or []
+    except AttributeError:
+        data = []
+    logger.warning("hybrid-search kb=%s status=%d items=%d", kb_id[:8], resp.status_code, len(data))
     resp.raise_for_status()
     items = resp.json().get("data") or []
     out = []

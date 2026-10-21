@@ -25,6 +25,7 @@ def test_instant_proxies_keyword():
         "success": True, "data": [{"id": "k1", "knowledge_base_id": "kb1", "knowledge_base_name": "101-市场运营部", "title": "关于X的通知", "file_name": "x.md", "updated_at": "2026-09-28T10:00:00Z"}], "has_more": False, "total": 1}))
     from gateway.config import settings as s
     s.weknora_base_url = "http://wk.test"
+    s.rerank_base_url = ""  # 本测试不覆盖重排
     resp = client.get("/api/instant?q=X", headers=AUTH)
     assert resp.status_code == 200
     body = resp.json()["results"][0]
@@ -44,6 +45,7 @@ def test_deep_flat_chunks_and_kb_name_fill():
     """hybrid-search 平铺 chunk 字段（无 kb_name）→ 网关映射并经库列表回填 kb_name。"""
     from gateway.config import settings as s
     s.weknora_base_url = "http://wk.test"
+    s.rerank_base_url = ""  # 本测试不覆盖重排
     respx.post("http://wk.test/api/v1/knowledge-bases/kb1/hybrid-search").mock(
         return_value=httpx.Response(200, json={"success": True, "data": [
             {"knowledge_id": "d1", "knowledge_base_id": "kb1", "knowledge_title": "关于X的通知", "knowledge_filename": "x.md", "score": 0.8},
@@ -62,6 +64,7 @@ def test_deep_flat_chunks_and_kb_name_fill():
 def test_deep_partial_on_kb_failure():
     from gateway.config import settings as s
     s.weknora_base_url = "http://wk.test"
+    s.rerank_base_url = ""  # 本测试不覆盖重排
     respx.post("http://wk.test/api/v1/knowledge-bases/kb1/hybrid-search").mock(
         return_value=httpx.Response(200, json={"success": True, "data": [
             {"knowledge_id": "d1", "knowledge_title": "t", "knowledge_filename": "f", "score": 0.8}]}))
@@ -77,6 +80,7 @@ def test_deep_partial_on_kb_failure():
 def test_recent_proxies_recent_mode():
     from gateway.config import settings as s
     s.weknora_base_url = "http://wk.test"
+    s.rerank_base_url = ""  # 本测试不覆盖重排
     route = respx.get("http://wk.test/api/v1/knowledge/search").mock(return_value=httpx.Response(200, json={
         "success": True, "data": [{"id": "r1", "knowledge_base_id": "kb1", "knowledge_base_name": "101-市场运营部", "title": "最新通知", "file_name": "n.md", "updated_at": None}], "has_more": False, "total": 1}))
     resp = client.get("/api/recent?limit=30", headers=AUTH)
@@ -121,6 +125,7 @@ def test_chat_stream_default_fans_dept_kbs_and_streams(monkeypatch):
     from gateway.config import settings as s
 
     s.weknora_base_url = "http://wk.test"
+    s.rerank_base_url = ""  # 本测试不覆盖重排
     monkeypatch.setattr(app_mod, "OLLAMA_BASE", "http://ollama.test")
     respx.get("http://wk.test/api/v1/knowledge-bases").mock(return_value=httpx.Response(200, json={
         "data": [{"id": "kb1", "name": "101-市场运营部"}, {"id": "kbx", "name": "TJAD共建数据源"}]}))
@@ -152,6 +157,7 @@ def test_chat_stream_fallback_all_kbs_when_no_dept_match(monkeypatch):
     from gateway.config import settings as s
 
     s.weknora_base_url = "http://wk.test"
+    s.rerank_base_url = ""  # 本测试不覆盖重排
     monkeypatch.setattr(app_mod, "OLLAMA_BASE", "http://ollama.test")
     respx.get("http://wk.test/api/v1/knowledge-bases").mock(return_value=httpx.Response(200, json={
         "data": [{"id": "kbx", "name": "TJAD共建数据源"}, {"id": "kby", "name": "TJAD既有数据源"}]}))
@@ -176,6 +182,7 @@ def test_chat_stream_all_kb_failures_reported_as_unreachable(monkeypatch):
     from gateway.config import settings as s
 
     s.weknora_base_url = "http://wk.test"
+    s.rerank_base_url = ""  # 本测试不覆盖重排
     monkeypatch.setattr(app_mod, "OLLAMA_BASE", "http://ollama.test")
     respx.get("http://wk.test/api/v1/knowledge-bases").mock(return_value=httpx.Response(200, json={
         "data": [{"id": "kb1", "name": "101-市场运营部"}, {"id": "kb2", "name": "103-科技质量部"}]}))
@@ -198,6 +205,7 @@ def test_chat_stream_sources_diverse_across_kbs(monkeypatch):
     from gateway.config import settings as s
 
     s.weknora_base_url = "http://wk.test"
+    s.rerank_base_url = ""  # 本测试不覆盖重排
     monkeypatch.setattr(app_mod, "OLLAMA_BASE", "http://ollama.test")
     respx.get("http://wk.test/api/v1/knowledge-bases").mock(return_value=httpx.Response(200, json={
         "data": [{"id": "kbhi", "name": "004-团委"}, {"id": "kbrel", "name": "101-市场运营部"}]}))
@@ -236,6 +244,7 @@ def test_chat_stream_bad_history_shape_is_reset(monkeypatch):
     from gateway.config import settings as s
 
     s.weknora_base_url = "http://wk.test"
+    s.rerank_base_url = ""  # 本测试不覆盖重排
     monkeypatch.setattr(app_mod, "OLLAMA_BASE", "http://ollama.test")
     respx.get("http://wk.test/api/v1/knowledge-bases").mock(return_value=httpx.Response(200, json={
         "data": [{"id": "kb1", "name": "101-市场运营部"}]}))
@@ -265,6 +274,7 @@ def test_chat_stream_ollama_first_token_timeout_degrades(monkeypatch):
     from gateway.config import settings as s
 
     s.weknora_base_url = "http://wk.test"
+    s.rerank_base_url = ""  # 本测试不覆盖重排
     monkeypatch.setattr(app_mod, "OLLAMA_BASE", "http://ollama.test")
     monkeypatch.setattr(app_mod, "OLLAMA_FIRST_TOKEN_TIMEOUT", 0.05)
     with respx.mock(assert_all_called=False) as rkm:
