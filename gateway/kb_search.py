@@ -116,49 +116,17 @@ async def rerank_via_local(client: httpx.AsyncClient, q: str, chunks: list[dict]
             idx = item.get("index")
             if not isinstance(idx, int) or not 0 <= idx < len(chunks):
                 continue
-            c = dict(chunks[idx])
             score = item.get("relevance_score")
-            if isinstance(score, (int, float)):
-                c["score"] = max(0.0, min(1.0, score))
+            # 对齐 WeKnora rerank_threshold：低于阈值 = 跨主题噪声，直接丢弃
+            if not isinstance(score, (int, float)) or score < settings.rerank_threshold:
+                continue
+            c = dict(chunks[idx])
+            c["score"] = max(0.0, min(1.0, score))
             ranked.append(c)
         return ranked or None
     except (httpx.HTTPError, asyncio.TimeoutError, ValueError):
-        logger.warning("local rerank unreachable; trying fallback provider", exc_info=True)
+        logger.warning("local rerank unreachable; keeping rotation merge", exc_info=True)
         return None
-
-
-async def rerank_chunks(client: httpx.AsyncClient, q: str, chunks: list[dict]) -> list[dict]:
-    """Cohere 兼容 rerank（siliconflow bge-reranker-v2-m3）。key 未配置或调用失败
-    时原样返回（调用方退回跨库轮转融合）。重排后把 relevance_score 写回 score，
-    使排序在客户端合并时保持一致。"""
-    key = settings.siliconflow_rerank_key
-    if not key or len(chunks) <= 1:
-        return chunks
-    try:
-        docs = [{"text": (c.get("content") or c.get("title") or "")[:1500]} for c in chunks]
-        resp = await asyncio.wait_for(
-            client.post(
-                "https://api.siliconflow.cn/v1/rerank",
-                headers={"Authorization": f"Bearer {key}"},
-                json={"model": "BAAI/bge-reranker-v2-m3", "query": q, "documents": docs, "top_n": MAX_SOURCES},
-            ),
-            timeout=RERANK_TIMEOUT,
-        )
-        results = resp.json().get("results") or []
-        ranked: list[dict] = []
-        for item in sorted(results, key=lambda r: r.get("relevance_score") or 0, reverse=True):
-            idx = item.get("index")
-            if not isinstance(idx, int) or not 0 <= idx < len(chunks):
-                continue
-            c = dict(chunks[idx])
-            score = item.get("relevance_score")
-            if isinstance(score, (int, float)):
-                c["score"] = max(0.0, min(1.0, score))
-            ranked.append(c)
-        return ranked or chunks
-    except (httpx.HTTPError, asyncio.TimeoutError, ValueError):
-        logger.warning("rerank failed; keeping fan-out order", exc_info=True)
-        return chunks
 
 
 async def retrieve(
@@ -209,30 +177,13 @@ async def retrieve(
     chunks: list[dict] = [r for _, rs in pairs for r in rs]
 
     # 智能检索第二步：优先自建重排服务（2080S bge-reranker），不可用时退回
-    # siliconflow（key 门控），都没有则跨库轮转融合（同分不可比，按库轮转取优）。
+    # 不可达则跨库轮转融合（同分不可比，按库轮转取优）。
     import time as _time
     _t0 = _time.monotonic()
     reranked = await rerank_via_local(client, q_effective, chunks) if settings.rerank_base_url else None
     LAST_DEBUG["rerank"] = {"applied": reranked is not None, "ms": int((_time.monotonic() - _t0) * 1000), "in": len(chunks)}
     if reranked is not None:
         chunks = reranked
-        merged = chunks[:MAX_SOURCES]
-        sources: list[dict] = []
-        seen: set[str] = set()
-        for c in merged:
-            if c["id"] not in seen:
-                seen.add(c["id"])
-                sources.append({
-                    "id": c["id"],
-                    "kb_id": c["kb_id"],
-                    "kb_name": c.get("kb_name") or "",
-                    "title": c.get("title") or "",
-                })
-        mode = "ok" if sources else "no_result"
-        return mode, merged, sources
-
-    if settings.siliconflow_rerank_key:
-        chunks = await rerank_chunks(client, q_effective, chunks)
         merged = chunks[:MAX_SOURCES]
         sources: list[dict] = []
         seen: set[str] = set()
