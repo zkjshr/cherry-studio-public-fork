@@ -3,8 +3,10 @@ import { stepCountIs, type StopCondition, type ToolSet, type UIMessage } from 'a
 
 import { application } from '@application'
 import type { AiPlugin } from '@cherrystudio/ai-core'
+import { agentService } from '@data/services/AgentService'
 import { projectRuntimeReasoning, providerRegistryService } from '@data/services/ProviderRegistryService'
 import { loggerService } from '@logger'
+import { resolveAgentCapabilities } from '@main/ai/agents/builtin/builtinAgentCapabilities'
 import { resolveRequestedMaxOutputTokens } from '@main/ai/contextBuild/resolveOutputReservation'
 import { resolveKnowledgeBaseScope } from '@main/ai/utils/knowledgeScope'
 import { getProviderById, getProviderForCapability, isPermanentWebSearchConfigError } from '@main/services/webSearch'
@@ -413,6 +415,12 @@ export async function resolveTools(
 }> {
   const { mcpToolIds, mcpResourceServerIds, hasAnyKnowledgeBase, browserEnabled } =
     signals ?? (await resolveRequestToolSignals(request, assistant))
+  // agent 会话（工作台）没有 legacy assistant——能力要从 AgentEntity 读：
+  // builtin_role / configuration.auto_knowledge 决定 kb_* 工具是否挂载
+  const agentEntity = assistant ? null : request.assistantId ? agentService.getAgent(request.assistantId) : null
+  const allKnowledgeBases =
+    (assistant?.settings as Record<string, unknown> | undefined)?.auto_knowledge === true ||
+    resolveAgentCapabilities(agentEntity).allKnowledgeBases
   if (mcpToolIds.size) {
     // Reconcile selected tool ids against every active server's cache-only catalog,
     // resolving ownership by exact id without MCP network round trips.
@@ -430,7 +438,7 @@ export async function resolveTools(
     hasPersistedOutputs,
     canOffloadToolOutputs,
     hasAnyKnowledgeBase,
-    allKnowledgeBases: (assistant?.settings as Record<string, unknown> | undefined)?.auto_knowledge === true,
+    allKnowledgeBases,
     knowledgeBaseIds,
     webToolRoutes
   })
