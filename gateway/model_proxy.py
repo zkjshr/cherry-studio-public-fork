@@ -12,10 +12,14 @@ import json
 import time
 import uuid
 
+import logging
+import os
+
 import httpx
 from fastapi import APIRouter, Depends, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+logger = logging.getLogger(__name__)
 from gateway.auth import require_token
 from gateway.chat import extract_ollama_parts
 from gateway.enterprise import (
@@ -239,6 +243,9 @@ async def _proxy_ollama(upstream: dict, model_id: str, model: str, body: dict, t
     if body.get("tools"):
         payload["tools"] = body["tools"]
     options: dict = {}
+    # ollama 默认 num_ctx=4096：input+output 共享该预算，思考型模型的推理即可
+    # 耗尽它 → 工具调用/正文被截断（表现为"只有 reasoning 没有回答"）。
+    options["num_ctx"] = int(os.environ.get("OLLAMA_NUM_CTX", "16384"))
     if body.get("max_tokens") is not None:
         options["num_predict"] = body["max_tokens"]
     if body.get("temperature") is not None:
