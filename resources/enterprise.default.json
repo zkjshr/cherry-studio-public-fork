@@ -1,5 +1,5 @@
 {
   "enabled": true,
-  "serverUrl": "http://127.0.0.1:8787",
+  "serverUrl": "http://10.121.16.58:8787",
   "token": "tjad-beta-2026"
 }
