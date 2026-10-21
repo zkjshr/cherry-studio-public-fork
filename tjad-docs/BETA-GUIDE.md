@@ -1,15 +1,15 @@
 # TJADKnows Desktop · 内测指南（第一期）
 
-- 服务端：http://192.168.66.12:8787（所里内网，须连办公网/VPN）
-- 下载页：http://192.168.66.12:8787/download
+- 服务端：http://10.121.16.58:8787（TJADKnows ZeroTier 网段，办公网/居家均可达，须已加入 ZeroTier 网络；原办公网地址 192.168.66.12:8787 已不再作为客户端接入地址）
+- 下载页：http://10.121.16.58:8787/download
 - 适用：Windows 10+ / macOS 10.15+（Apple Silicon 优先，Intel 包按需另出）
-- 客户端版本：2.1.4-tjad.4（基于开源 Cherry Studio 2.1.4 + TJAD 企业定制，产品名 TJADKnows Desktop；tjad.3 起不再弹官方数据迁移向导，tjad.4 新增插件市场）
+- 客户端版本：2.1.4-tjad.5（基于开源 Cherry Studio 2.1.4 + TJAD 企业定制，产品名 TJADKnows Desktop；tjad.3 起不再弹官方数据迁移向导，tjad.4 新增插件市场，tjad.5 内置地址切换 ZeroTier 并配套服务端稳定性修复——工具调用被截断、长回答丢失等）
 
 ## 安装（约 3 分钟）
 
 1. 打开下载页，对应平台下载安装包：
-   - Windows：`TJADKnows-Desktop-2.1.4-tjad.4-x64-setup.exe`（SmartScreen 可能提示"未知发布者"→ 更多信息 → 仍要运行；内测包未签名）
-   - macOS：`TJADKnows-Desktop-2.1.4-tjad.4-mac-arm64.dmg`（拖入 Applications；首次打开若提示未公证：右键 → 打开，或终端执行 `xattr -cr "/Applications/TJADKnows Desktop.app"`）
+   - Windows：`TJADKnows-Desktop-2.1.4-tjad.5-x64-setup.exe`（SmartScreen 可能提示"未知发布者"→ 更多信息 → 仍要运行；内测包未签名）
+   - macOS：`TJADKnows-Desktop-2.1.4-tjad.5-mac-arm64.dmg`（拖入 Applications；首次打开若提示未公证：右键 → 打开，或终端执行 `xattr -cr "/Applications/TJADKnows Desktop.app"`）
 2. 启动应用（无需任何配置——企业配置已内置：服务端地址、访问令牌开箱即连）。
 3. 验证同步成功：设置 → 通用设置 → 底部「企业管理」卡片显示 **已同步 v1**，且无红色错误。
 
@@ -30,13 +30,11 @@
 
 ## 远程使用（不在所里网络时）
 
-客户端与服务端均支持通过 ZeroTier 访问：加入所里 ZeroTier 网络后，地址 **http://10.137.200.58:8787**（办公网内同样可用）。
-tjad.4 及更早安装包内置的是办公网地址，远程同事装完后执行一次：
+服务端走 ZeroTier：加入所里 ZeroTier 网络后，办公网内与居家远程均用 **http://10.121.16.58:8787**，无需任何区分。
+tjad.5 安装包已内置该地址，装完即用；tjad.4 及更早安装包内置的是旧办公网地址，装完后执行一次：
 
-- macOS/Linux：`mkdir -p ~/.cherrystudio/config && printf '{"enabled":true,"serverUrl":"http://10.137.200.58:8787","token":"tjad-beta-2026"}\n' > ~/.cherrystudio/config/enterprise.json`
+- macOS/Linux：`mkdir -p ~/.cherrystudio/config && printf '{"enabled":true,"serverUrl":"http://10.121.16.58:8787","token":"tjad-beta-2026"}\n' > ~/.cherrystudio/config/enterprise.json`
 - Windows：把同样内容写入 `%USERPROFILE%\.cherrystudio\config\enterprise.json`（JSON 一行）
-
-tjad.5 起安装包默认指向 ZeroTier 地址，无需此步骤。
 
 ## 已知限制（内测期）
 
@@ -49,7 +47,7 @@ tjad.5 起安装包默认指向 ZeroTier 地址，无需此步骤。
 
 | 现象 | 处理 |
 |---|---|
-| 企业管理卡片显示"server unreachable" | 确认连的是办公网；浏览器开 http://192.168.66.12:8787/health 应返回 `{"status":"ok"}` |
+| 企业管理卡片显示"server unreachable" | 确认已加入 ZeroTier 网络；浏览器开 http://10.121.16.58:8787/api/health 应返回 `{"status":"ok"}` |
 | 知识助手回答"知识库暂不可达" | WeKnora（10.137.200.58:8091）服务波动，稍后重试；持续出现报给管理员 |
 | 模型回复很慢 | 4090 上 ollama 正被其他任务共用；错峰或报管理员 |
 | macOS 打不开 | 见安装节 xattr 命令 |
