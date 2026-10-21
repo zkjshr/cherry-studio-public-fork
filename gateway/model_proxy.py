@@ -246,6 +246,8 @@ async def _proxy_ollama(upstream: dict, model_id: str, model: str, body: dict, t
     # ollama 默认 num_ctx=4096：input+output 共享该预算，思考型模型的推理即可
     # 耗尽它 → 工具调用/正文被截断（表现为"只有 reasoning 没有回答"）。
     options["num_ctx"] = int(os.environ.get("OLLAMA_NUM_CTX", "16384"))
+    logger.warning("chat tools=%d stream=%s model=%s", len(body.get("tools") or []),
+                   body.get("stream"), body.get("model"))
     if body.get("max_tokens") is not None:
         options["num_predict"] = body["max_tokens"]
     if body.get("temperature") is not None:
